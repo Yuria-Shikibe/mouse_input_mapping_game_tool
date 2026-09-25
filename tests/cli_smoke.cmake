@@ -1,0 +1,43 @@
+file(MAKE_DIRECTORY "${test_dir}/app" "${test_dir}/cwd")
+file(COPY_FILE "${app}" "${test_dir}/app/mouse_input_mapping.exe")
+file(WRITE "${test_dir}/answers.txt" "LEFT\n\nRIGHT\n\nF8\n\n")
+execute_process(COMMAND "${test_dir}/app/mouse_input_mapping.exe" --configure
+    WORKING_DIRECTORY "${test_dir}/cwd" INPUT_FILE "${test_dir}/answers.txt"
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error TIMEOUT 10)
+if(NOT result EQUAL 0)
+    message(FATAL_ERROR "Configure failed: ${output}\n${error}")
+endif()
+if(NOT output MATCHES "Selected: F8" OR NOT output MATCHES "Bound Toggle key: F8")
+    message(FATAL_ERROR "Function key selection/confirmation did not echo its name: ${output}")
+endif()
+file(READ "${test_dir}/app/config.ini" config)
+if(NOT config MATCHES "left_key=0xe04b" OR NOT config MATCHES "right_key=0xe04d")
+    message(FATAL_ERROR "Configuration saved wrong keys: ${config}")
+endif()
+execute_process(COMMAND "${test_dir}/app/mouse_input_mapping.exe" --check
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error TIMEOUT 10)
+if(NOT "${output}${error}" MATCHES "Driver is accessible|Cannot open Interception driver|Driver opened")
+    message(FATAL_ERROR "Standalone EXE failed to load its embedded DLL: ${output}\n${error}")
+endif()
+file(WRITE "${test_dir}/incomplete.txt" "F8\n")
+execute_process(COMMAND "${test_dir}/app/mouse_input_mapping.exe" --configure-text
+    INPUT_FILE "${test_dir}/incomplete.txt"
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error TIMEOUT 10)
+if(NOT result EQUAL 1 OR NOT error MATCHES "before confirmation")
+    message(FATAL_ERROR "Unconfirmed selection was accepted: ${output}\n${error}")
+endif()
+file(READ "${test_dir}/app/config.ini" after_cancel)
+if(NOT "${after_cancel}" STREQUAL "${config}")
+    message(FATAL_ERROR "Unconfirmed selection changed the saved config")
+endif()
+file(WRITE "${test_dir}/invalid.ini" "window_ms=0\n")
+execute_process(COMMAND "${test_dir}/app/mouse_input_mapping.exe" --config "${test_dir}/invalid.ini"
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error TIMEOUT 10)
+if(NOT result EQUAL 1 OR NOT error MATCHES "window_ms")
+    message(FATAL_ERROR "Invalid config not rejected: ${output}\n${error}")
+endif()
+execute_process(COMMAND "${test_dir}/app/mouse_input_mapping.exe" --invalid
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error TIMEOUT 10)
+if(NOT result EQUAL 1 OR NOT error MATCHES "Unknown option")
+    message(FATAL_ERROR "Unknown CLI option not rejected: ${output}\n${error}")
+endif()

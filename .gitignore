@@ -1,0 +1,14 @@
+/build/
+/dist/
+/cmake-build-*/
+/.idea/
+/_ReSharper.Caches/
+/config.ini
+/third_party/interception/package/
+/third_party/interception/Interception.zip
+/mouse_input_mapping_windows_x64.zip
+/CMakeUserPresets.json
+/.vs/
+/out/
+*.user
+*.log

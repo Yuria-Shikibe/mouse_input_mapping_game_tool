@@ -1,0 +1,10 @@
+* text=auto eol=lf
+*.cpp text eol=lf
+*.hpp text eol=lf
+*.cmake text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.exe binary
+*.dll binary
+*.pdf binary
+*.zip binary
