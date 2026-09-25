@@ -1,6 +1,6 @@
 file(MAKE_DIRECTORY "${test_dir}/app" "${test_dir}/cwd")
 file(COPY_FILE "${app}" "${test_dir}/app/mouse_input_mapping.exe")
-file(WRITE "${test_dir}/answers.txt" "LEFT\n\nRIGHT\n\nF8\n\n")
+file(WRITE "${test_dir}/answers.txt" "LEFT\n\nRIGHT\n\nF8\n\n\n\n")
 execute_process(COMMAND "${test_dir}/app/mouse_input_mapping.exe" --configure
     WORKING_DIRECTORY "${test_dir}/cwd" INPUT_FILE "${test_dir}/answers.txt"
     RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error TIMEOUT 10)

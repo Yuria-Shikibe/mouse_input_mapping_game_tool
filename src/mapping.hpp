@@ -4,6 +4,8 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <algorithm>
+#include <optional>
 #include <stdexcept>
 
 namespace mouse_mapping {
@@ -27,6 +29,7 @@ public:
     explicit motion_filter(filter_settings settings = {}) : settings_(settings) {}
 
     direction update(std::int32_t delta_x, time_point now) {
+        confirmed_counts_ = 0;
         tick(now);
         if (delta_x == 0) return direction_;
         samples_.push_back({now, delta_x});
@@ -58,11 +61,19 @@ public:
         direction_ = direction::idle;
         samples_.clear();
         total_ = 0;
+        confirmed_counts_ = 0;
+    }
+
+    std::int64_t take_confirmed_counts() {
+        const auto result = confirmed_counts_;
+        confirmed_counts_ = 0;
+        return result;
     }
 
 private:
     struct sample { time_point time; std::int32_t delta_x; };
     void confirm(direction next, time_point now) {
+        confirmed_counts_ = total_ < 0 ? -total_ : total_;
         direction_ = next;
         last_confirmed_ = now;
         samples_.clear();
@@ -71,6 +82,7 @@ private:
     filter_settings settings_;
     std::deque<sample> samples_;
     std::int64_t total_ = 0;
+    std::int64_t confirmed_counts_ = 0;
     direction direction_ = direction::idle;
     time_point last_confirmed_{};
 };
@@ -134,6 +146,95 @@ private:
     std::array<bool, 2> output_down_{};
     std::array<int, 2> output_device_{};
     direction desired_ = direction::idle;
+};
+
+// One direction pair, with optional displacement-driven key pulses.
+class axis_mapping {
+public:
+    axis_mapping(filter_settings filter, key_code negative, key_code positive,
+                 bool pulse, double hold_ratio, int period_ms)
+        : filter_(filter), router_(negative, positive), pulse_(pulse), ratio_(hold_ratio),
+          period_(period_ms) {}
+
+    template<class Sink>
+    void update(std::int32_t delta, time_point now, int device, Sink&& send) {
+        const auto previous = direction_;
+        direction_ = filter_.update(delta, now);
+        const auto counts = filter_.take_confirmed_counts();
+        if (!pulse_) { router_.set_direction(direction_, device, send); return; }
+        if (direction_ != previous) {
+            credit_ = 0;
+            if (pressed_) {
+                router_.set_direction(direction::idle, device, send);
+                pressed_ = false;
+                due_ = now + up_time();
+            }
+        }
+        if (counts && ratio_ > 0) credit_ = std::min<std::int64_t>(10, credit_ + counts);
+        service(now, device, send);
+    }
+
+    template<class Sink>
+    void tick(time_point now, int device, Sink&& send) {
+        const auto next = filter_.tick(now);
+        if (!pulse_) { router_.set_direction(next, device, send); return; }
+        if (next == direction::idle) credit_ = 0;
+        direction_ = next;
+        service(now, device, send);
+    }
+
+    template<class Sink>
+    void release(int device, Sink&& send) {
+        filter_.reset();
+        direction_ = direction::idle;
+        credit_ = 0;
+        pressed_ = false;
+        due_.reset();
+        router_.set_direction(direction::idle, device, send);
+    }
+
+    template<class Sink>
+    bool physical(key_event event, Sink&& send) { return router_.physical(event, send); }
+
+    std::optional<time_point> deadline() const {
+        return pulse_ && (pressed_ || credit_ >= 10) ? due_ : std::nullopt;
+    }
+
+private:
+    clock_type::duration down_time() const {
+        const auto nanos = std::max<std::int64_t>(1000000,
+            static_cast<std::int64_t>(period_ * ratio_ * 1000000.0));
+        return std::chrono::duration_cast<clock_type::duration>(std::chrono::nanoseconds(nanos));
+    }
+    clock_type::duration up_time() const {
+        const auto nanos = std::max<std::int64_t>(1000000,
+            static_cast<std::int64_t>(period_ * (1.0 - ratio_) * 1000000.0));
+        return std::chrono::duration_cast<clock_type::duration>(std::chrono::nanoseconds(nanos));
+    }
+    template<class Sink>
+    void service(time_point now, int device, Sink&& send) {
+        if (pressed_ && due_ && now >= *due_) {
+            router_.set_direction(direction::idle, device, send);
+            pressed_ = false;
+            due_ = now + up_time();
+        }
+        if (!pressed_ && direction_ != direction::idle && ratio_ > 0
+            && credit_ >= 10 && (!due_ || now >= *due_)) {
+            router_.set_direction(direction_, device, send);
+            pressed_ = true;
+            credit_ -= 10;
+            due_ = now + down_time();
+        }
+    }
+    motion_filter filter_;
+    key_router router_;
+    bool pulse_;
+    double ratio_;
+    int period_;
+    direction direction_ = direction::idle;
+    std::int64_t credit_ = 0;
+    bool pressed_ = false;
+    std::optional<time_point> due_;
 };
 
 class toggle_latch {

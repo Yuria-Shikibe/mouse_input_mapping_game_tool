@@ -81,6 +81,10 @@ void interception_set_filter(InterceptionContext, InterceptionPredicate predicat
 InterceptionFilter interception_get_filter(InterceptionContext, InterceptionDevice) { return 0; }
 
 InterceptionDevice interception_wait_with_timeout(InterceptionContext, unsigned long) {
+    if (GetEnvironmentVariableW(L"MOUSE_MAPPING_TEST_IDLE", nullptr, 0) != 0) {
+        Sleep(4);
+        return 0;
+    }
     // A zero readback must not prevent startup, but filters must still be set.
     if (std::any_of(filters.begin(), filters.end(), [](auto value) { return value != 0xffff; })) {
         failed = true;

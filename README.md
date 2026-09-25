@@ -1,17 +1,71 @@
 # Mouse Input Mapping
 
-Windows x64 终端工具：把鼠标横向移动映射为两个键盘按键。向左/右移动时按住对应键，停止后释放；开启时在 Interception 驱动输入路径中将相对鼠标数据的 X 分量清零，保留 Y、按钮和滚轮。
+Windows x64 终端工具，提供两个独立 target / EXE：
+
+| target / EXE 名称 | 输入方案 | 映射范围 | 默认配置文件 |
+| --- | --- | --- | --- |
+| `mouse_input_mapping_kernel` | Interception 内核过滤驱动 | X- → A，X+ → D；过滤 X、保留 Y | `config.ini` |
+| `mouse_input_mapping_user` | Raw Input + SendInput，无第三方驱动 | XY 四向 + 鼠标五键 + 滚轮滚动转键盘 | `config.user.ini` |
+
+两个版本均默认 OFF、F8 切换、Ctrl+C 退出，不允许同时运行。内核版本保持原有功能和配置兼容性，原 `mouse_input_mapping` 构建 target 已重命名为 `mouse_input_mapping_kernel`。
+
+## Steam 启动选项：随游戏运行
+
+先单独启动对应版本完成键位配置；内核版还需安装驱动并按提示重启。之后将 Steam 游戏的“启动选项”设为以下其中一项，并把工具路径替换为实际绝对路径：
+
+```text
+"C:\tools\mouse_input_mapping_user.exe" --daemon %command%
+"C:\tools\mouse_input_mapping_kernel.exe" --daemon %command%
+```
+
+如需指定配置，在 `--daemon` 前加入 `--config "C:\path\my.ini"`。`--daemon` 后的第一个参数必须是实际游戏 EXE，后续参数原样转发给游戏。工具启动游戏后记录 PID；游戏进程结束时记录退出事件、释放映射按键并退出。工具提前退出不会关闭游戏。只跟踪直接启动的进程：若传入的程序只是启动器，它退出时工具也会退出，即使它另行启动的游戏还在运行。
+
+daemon 模式要求配置文件存在，且本版本使用的所有键位都已在文件中明确绑定；缺少或无效时直接报错，不启动游戏。内核版还要求驱动已可用，此模式不会安装驱动或弹出配置向导。两个版本仍默认 OFF，可用 F8 切换。游戏继承 Steam 的环境和工作目录；游戏进程与工具控制台分离，关闭工具控制台不会向游戏发送控制台关闭事件。
 
 作者：**mo_yanxi**。项目原创代码采用 [MIT License](LICENSE)，第三方依赖见 [许可声明](THIRD_PARTY_NOTICES.md)。
 
-## 安装和使用
+## 用户态版本：XY 四向映射
 
-`mouse_input_mapping.exe` 已内置 Interception DLL 和官方驱动安装器，可以单独复制运行，无需额外下载依赖或安装 VC++ Redistributable。完整发布包还包含 Raw Input 检测工具、说明和许可文件。
+运行 `mouse_input_mapping_user.exe`，首次依次录入左、右、上（Y-）、下（Y+）、五个鼠标按钮、滚轮上滑/下滑的目标键和切换键。滚轮上滑与下滑可以映射到同一个键；其余映射目标键必须互不相同。按下目标键盘按键后用 Enter 确认；IDE 控制台可以输入键名。新配置的默认值采用 `cmake-build-debug/bin/config.user.ini` 中的键位和参数；程序仍读取 EXE 同目录的 `config.user.ini`。
+
+| 输入 | 配置字段 | 默认输出 |
+| --- | --- | --- |
+| X- / X+ | `left_key` / `right_key` | A / D |
+| Y- / Y+ | `up_key` / `down_key` | S / W |
+| 左键 LMB | `lmb_key` | SUBTRACT |
+| 右键 RMB | `rmb_key` | M |
+| 滚轮按下 CMB | `cmb_key` | T |
+| 侧键 1 / 侧键 2 | `x1_key` / `x2_key` | LSHIFT / F |
+| 滚轮上滑 / 下滑 | `wheel_up_key` / `wheel_down_key` | R / R |
+| 开关 | `toggle_key` | F8 |
+
+```powershell
+.\mouse_input_mapping_user.exe
+.\mouse_input_mapping_user.exe --configure
+.\mouse_input_mapping_user.exe --configure-text
+.\mouse_input_mapping_user.exe --config C:\my_config\mouse.user.ini
+```
+
+游戏内需关闭鼠标输入，并把对应动作绑定到表中的目标键盘按键。用户态程序监听鼠标并输出键盘按键，不屏蔽原始 XY 或鼠标按钮。斜向移动时 X/Y 独立输出各自方向键，并独立处理抖动、反向与超时释放；两轴共用 `window_ms`、`start_counts`、`reverse_counts`、`release_ms` 参数。参考 `config.user.example.ini`。
+
+XY 可分别选择长按或脉冲：默认 X 持续按住方向键，Y 使用脉冲。配置向导可输入 `0` 或 `1` 启用各轴脉冲，并输入 `0～1` 浮点数设置单次按住比例。配置文件字段为 `x_pulse_enabled`、`y_pulse_enabled`、`x_hold_ratio`、`y_hold_ratio`、`pulse_period_ms`。默认周期 30 ms，Y 比例为 `0.65`。鼠标位移越快脉冲越密，最多积压一次脉冲；高速输入超过输出能力时会饱和。比例 `0` 不输出该轴按键，比例 `1` 仍保留至少 1 ms 松开间隔。内核版只使用 X 字段；启用 X 脉冲后仍过滤原始 X。
+
+鼠标五键直接映射：按下发目标键 DOWN，松开发 UP，支持同时按住多个按钮；按钮不受 XY 的超时释放影响。滚轮上滑、下滑每刻度分别发送目标键约 10 ms 的短按，两次之间至少释放 10 ms；最多排队八次，避免大量滚动造成长时间滞后。高分辨率滚轮的不足一刻度位移会按设备累计，拔掉设备时清除。滚轮按下是独立的中键 CMB，侧键指标准 XBUTTON1 / XBUTTON2。多只鼠标的同一按钮按住状态会合并，拔掉设备会释放其按钮占用。关闭映射或正常退出释放映射持有的键。启用前需先松开鼠标按钮和所有映射目标键。水平滚轮暂不映射。
+
+此 EXE 可单独运行，不加载或释放 Interception DLL、不安装驱动，不需要首次管理员授权或重启。它也不会卸载以前由内核版本安装的驱动。没有 `--install-driver` 或驱动 `--check` 选项。Windows 权限级别和游戏规则仍可能限制 SendInput；无驱动不代表游戏一定接受或允许该映射。
+
+切换键由用户态低级键盘钩子处理；开启时十一个映射目标键也经该钩子合并实体与自动按住状态，避免自动松键打断实体按住。用户态钩子不区分实体键盘，因此不保证多个键盘同时按住同一映射键的合并；其拦截也不保证能阻止游戏自己的 Raw Input 键盘路径。OFF 时普通键盘输入透传。强制结束进程或系统终止不能保证松键清理。
+
+支持相对鼠标，多只鼠标共同参与映射；绝对定位设备只处理按钮，不映射坐标。验证时检查四个方向、斜向组合、独立超时、反向先松后按、五个按钮按住/松开与组合、关闭时松键，并在目标游戏内确认按键生效。用户态不应通过 `raw_input_probe --expect-zero-x` 验收，因为它有意保留原始鼠标数据。
+
+## 内核态版本：安装和使用
+
+`mouse_input_mapping_kernel.exe` 已内置 Interception DLL 和官方驱动安装器，可以单独复制运行，无需额外下载依赖或安装 VC++ Redistributable。完整发布包还包含 Raw Input 检测工具、说明和许可文件。
 
 1. 直接运行 EXE。首次录入左移键、右移键和快捷键：在普通 Windows 终端中，按下目标键，看到如 `Selected: F8 (0x0042)` 的回显后，按 Enter 确认。直接按 Enter 保留当前显示的键位，默认 `A`、`D`、`F8`。
 
    ```powershell
-   .\mouse_input_mapping.exe
+   .\mouse_input_mapping_kernel.exe
    ```
 
 2. 如果系统缺少驱动，程序会自动启动内置安装器，由 Windows 请求管理员授权。允许后完成安装，程序提示重启；配置已保存，**不会自动重启**。如果取消授权，下次运行可以再试。
@@ -27,12 +81,12 @@ Windows x64 终端工具：把鼠标横向移动映射为两个键盘按键。�
 配置操作：
 
 ```powershell
-.\mouse_input_mapping.exe --configure
-.\mouse_input_mapping.exe --configure-text
-.\mouse_input_mapping.exe --config C:\my_config\mouse.ini
-.\mouse_input_mapping.exe --check
-.\mouse_input_mapping.exe --install-driver
-.\mouse_input_mapping.exe --help
+.\mouse_input_mapping_kernel.exe --configure
+.\mouse_input_mapping_kernel.exe --configure-text
+.\mouse_input_mapping_kernel.exe --config C:\my_config\mouse.ini
+.\mouse_input_mapping_kernel.exe --check
+.\mouse_input_mapping_kernel.exe --install-driver
+.\mouse_input_mapping_kernel.exe --help
 ```
 
 `--configure` / `--configure-text` 确认并保存后退出，不安装或要求驱动。文本模式可输入新名称反复修改，空行确认；未确认就结束输入不会覆盖配置。`--check` 仅检查状态，不安装驱动。`--install-driver` 显式安装/修复驱动，成功时返回 Windows 的“需要重启”状态码 3010；常规启动自动安装完成后的退出码为 0。默认配置是 EXE 同目录的 `config.ini`，不取决于当前工作目录；目录不可写时使用 `--config`。已有配置会直接加载；重新绑定请使用 `--configure`。旧版扫描码配置完全兼容，新保存的配置会附带键名注释。
@@ -54,7 +108,7 @@ Windows x64 终端工具：把鼠标横向移动映射为两个键盘按键。�
 
 位移单位为鼠标原始 counts，与 DPI 有关，不是屏幕像素。增大 `start_counts` 可以压制小幅抖动；减小会更灵敏。增大 `reverse_counts` 可减少误反向；减小会更快转向。减小 `release_ms` 可以更快停下，但缓慢移动时可能断续。`release_ms` 必须不少于 `window_ms`，`reverse_counts` 必须不少于 `start_counts`。
 
-每次达到阈值后清空累计量；未确认的小幅抖动、零位移和纯纵向移动不会刷新按住时间。反向时先松开原映射键再按下新键。持续同向移动只保持按下，不额外发送连点。
+每次达到阈值后清空过滤累计量；未确认的小幅抖动、零位移和纯纵向移动不会刷新方向时间。反向时先松开原映射键再按下新键。未启用脉冲的轴持续同向移动只保持按下；启用脉冲的轴按确认位移发出短按和释放。
 
 运行时所有受 Interception 管理的相对鼠标一起参与映射。键盘输出使用开启映射时触发快捷键的键盘设备。实体映射键和自动映射使用合并的按住状态，自动松键不会释放仍被用户实际按住的同一键。用户同时实际按下两个方向键时，仍保留用户输入。
 
@@ -93,6 +147,8 @@ cmake --install build/release
 cpack --config build/release/CPackConfig.cmake -C Release
 ```
 
+仅构建某一方案可用 `cmake --build --preset release --target mouse_input_mapping_user` 或 `--target mouse_input_mapping_kernel`。用户态 target 不编译或链接驱动部署代码，不嵌入第三方资源。
+
 编译程序位于 `build/release/bin/`，安装目录为 `dist/windows-x64/`，版本化 ZIP 位于 `dist/`。CPack 从安装规则生成干净发布包，不读取已有安装目录，因此不会混入本地 `config.ini`。Debug 开发可将 preset 换为 `debug`。发布时使用完整 ZIP，以保留许可材料。
 
 也可以在 CLion 中直接打开 CMake 项目并选择 MSVC x64。第三方文件已固定版本，无构建时下载。测试不启用真实驱动过滤，覆盖净位移/抖动/反向/超时、8 kHz 输入序列、按键状态合并、发送失败、扫描码和配置持久化。集成测试使用单独目录里的模拟 DLL，验证鼠标包、开关、超时释放及驱动读取失败后的清理；该 DLL 不会安装或打包进交付目录。真实驱动与游戏效果必须按上面的步骤实测。
@@ -107,7 +163,7 @@ tests/        单元测试、模拟驱动和集成测试
 third_party/  固定版本依赖、源码及原始许可（构建输入）
 cmake/        发布打包规则
 docs/         验证记录
-.github/      Windows Debug/Release CI
+.github/      Windows Release 构建、测试及 ZIP 上传 CI
 build/        编译输出、生成资源及测试临时文件（不提交）
 dist/         最终安装目录和发布 ZIP（不提交）
 ```

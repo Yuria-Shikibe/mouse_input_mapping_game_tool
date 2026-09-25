@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <cctype>
 #include <fstream>
 #include <iomanip>
@@ -57,6 +58,20 @@ int parse_integer(std::string_view value) {
     if (error != std::errc{} || end != value.data() + value.size())
         throw std::runtime_error("Expected an integer");
     return result;
+}
+
+double parse_ratio(std::string_view value) {
+    double result = 0;
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
+    if (error != std::errc{} || end != value.data() + value.size() || !std::isfinite(result)
+        || result < 0 || result > 1) throw std::runtime_error("Expected a ratio from 0 to 1");
+    return result;
+}
+
+bool parse_switch(std::string_view value) {
+    if (value == "0") return false;
+    if (value == "1") return true;
+    throw std::runtime_error("Expected 0 or 1");
 }
 
 bool supported_key(key_code code) {
@@ -129,6 +144,20 @@ void validate(const configuration& config) {
         if (!supported_key(code)) throw std::runtime_error(std::string(name) + ": unsupported scan code");
     if (config.left_key == config.right_key || config.left_key == config.toggle_key || config.right_key == config.toggle_key)
         throw std::runtime_error("left_key, right_key and toggle_key must be different");
+    if (config.map_y) {
+        if (!supported_key(config.up_key) || !supported_key(config.down_key))
+            throw std::runtime_error("up_key/down_key: unsupported scan code");
+        std::set<key_code> keys{config.left_key, config.right_key, config.up_key, config.down_key, config.toggle_key};
+        for (const auto code : config.mouse_keys) {
+            if (!supported_key(code)) throw std::runtime_error("Mouse button binding: unsupported scan code");
+            keys.insert(code);
+        }
+        if (keys.size() != 10) throw std::runtime_error("Direction, mouse button and toggle keys must be different");
+        for (const auto code : config.wheel_keys) {
+            if (!supported_key(code)) throw std::runtime_error("Mouse wheel binding: unsupported scan code");
+            if (keys.contains(code)) throw std::runtime_error("Wheel keys must differ from direction, mouse button and toggle keys");
+        }
+    }
     const auto& filter = config.filter;
     if (filter.window_ms < 1 || filter.window_ms > 1000) throw std::runtime_error("window_ms must be 1..1000");
     if (filter.start_counts < 1 || filter.start_counts > 10000) throw std::runtime_error("start_counts must be 1..10000");
@@ -136,10 +165,16 @@ void validate(const configuration& config) {
         throw std::runtime_error("reverse_counts must be start_counts..10000");
     if (filter.release_ms < filter.window_ms || filter.release_ms > 2000)
         throw std::runtime_error("release_ms must be window_ms..2000");
+    if (!std::isfinite(config.x_hold_ratio) || config.x_hold_ratio < 0 || config.x_hold_ratio > 1
+        || !std::isfinite(config.y_hold_ratio) || config.y_hold_ratio < 0 || config.y_hold_ratio > 1)
+        throw std::runtime_error("hold ratios must be 0..1");
+    if (config.pulse_period_ms < 2 || config.pulse_period_ms > 1000)
+        throw std::runtime_error("pulse_period_ms must be 2..1000");
 }
 
-configuration read_config(std::istream& input) {
+configuration read_config(std::istream& input, bool map_y, bool require_bindings) {
     configuration config;
+    config.map_y = map_y;
     std::set<std::string> seen;
     std::string line;
     int line_number = 0;
@@ -157,36 +192,86 @@ configuration read_config(std::istream& input) {
             if (name == "left_key") config.left_key = parse_key(value);
             else if (name == "right_key") config.right_key = parse_key(value);
             else if (name == "toggle_key") config.toggle_key = parse_key(value);
+            else if (map_y && name == "up_key") config.up_key = parse_key(value);
+            else if (map_y && name == "down_key") config.down_key = parse_key(value);
             else if (name == "window_ms") config.filter.window_ms = parse_integer(value);
             else if (name == "start_counts") config.filter.start_counts = parse_integer(value);
             else if (name == "reverse_counts") config.filter.reverse_counts = parse_integer(value);
             else if (name == "release_ms") config.filter.release_ms = parse_integer(value);
-            else throw std::runtime_error("Unknown field");
+            else if (name == "x_pulse_enabled") config.x_pulse_enabled = parse_switch(value);
+            else if (map_y && name == "y_pulse_enabled") config.y_pulse_enabled = parse_switch(value);
+            else if (name == "x_hold_ratio") config.x_hold_ratio = parse_ratio(value);
+            else if (map_y && name == "y_hold_ratio") config.y_hold_ratio = parse_ratio(value);
+            else if (name == "pulse_period_ms") config.pulse_period_ms = parse_integer(value);
+            else {
+                bool found = false;
+                if (map_y) for (std::size_t index = 0; index < mouse_key_fields.size(); ++index) {
+                    if (name == mouse_key_fields[index]) {
+                        config.mouse_keys[index] = parse_key(value);
+                        found = true;
+                        break;
+                    }
+                }
+                if (map_y) for (std::size_t index = 0; index < wheel_key_fields.size(); ++index) {
+                    if (name == wheel_key_fields[index]) {
+                        config.wheel_keys[index] = parse_key(value);
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) throw std::runtime_error("Unknown field");
+            }
         } catch (const std::exception& error) {
             throw std::runtime_error("Config line " + std::to_string(line_number) + " (" + name + "): " + error.what());
         }
     }
     if (input.bad()) throw std::runtime_error("Cannot read configuration");
+    if (require_bindings) {
+        for (const char* name : {"left_key", "right_key", "toggle_key"})
+            if (!seen.contains(name)) throw std::runtime_error(std::string("Unbound key: ") + name + "; run --configure first");
+        if (map_y) {
+            for (const char* name : {"up_key", "down_key"})
+                if (!seen.contains(name)) throw std::runtime_error(std::string("Unbound key: ") + name + "; run --configure first");
+            for (const char* name : mouse_key_fields)
+                if (!seen.contains(name)) throw std::runtime_error(std::string("Unbound key: ") + name + "; run --configure first");
+            for (const char* name : wheel_key_fields)
+                if (!seen.contains(name)) throw std::runtime_error(std::string("Unbound key: ") + name + "; run --configure first");
+        }
+    }
     validate(config);
     return config;
 }
 
-configuration load_config(const std::filesystem::path& path) {
+configuration load_config(const std::filesystem::path& path, bool map_y, bool require_bindings) {
     std::ifstream input(path);
     if (!input) throw std::runtime_error("Cannot open configuration file");
-    return read_config(input);
+    return read_config(input, map_y, require_bindings);
 }
 
 void write_config(std::ostream& output, const configuration& config) {
     validate(config);
     output << "; Keys are physical scan codes; 0xe0xx means an extended key. Key names are also accepted.\n"
         << "[mapping]\nleft_key=" << format_key(config.left_key) << " ; " << key_name(config.left_key)
-        << "\nright_key=" << format_key(config.right_key) << " ; " << key_name(config.right_key)
-        << "\ntoggle_key=" << format_key(config.toggle_key) << " ; " << key_name(config.toggle_key)
+        << "\nright_key=" << format_key(config.right_key) << " ; " << key_name(config.right_key);
+    if (config.map_y)
+        output << "\nup_key=" << format_key(config.up_key) << " ; Y-: " << key_name(config.up_key)
+            << "\ndown_key=" << format_key(config.down_key) << " ; Y+: " << key_name(config.down_key);
+    if (config.map_y) for (std::size_t index = 0; index < mouse_key_fields.size(); ++index)
+        output << '\n' << mouse_key_fields[index] << '=' << format_key(config.mouse_keys[index])
+            << " ; " << key_name(config.mouse_keys[index]);
+    if (config.map_y) for (std::size_t index = 0; index < wheel_key_fields.size(); ++index)
+        output << '\n' << wheel_key_fields[index] << '=' << format_key(config.wheel_keys[index])
+            << " ; " << key_name(config.wheel_keys[index]);
+    output << "\ntoggle_key=" << format_key(config.toggle_key) << " ; " << key_name(config.toggle_key)
         << "\nwindow_ms=" << config.filter.window_ms
         << "\nstart_counts=" << config.filter.start_counts
         << "\nreverse_counts=" << config.filter.reverse_counts
-        << "\nrelease_ms=" << config.filter.release_ms << '\n';
+        << "\nrelease_ms=" << config.filter.release_ms
+        << "\nx_pulse_enabled=" << (config.x_pulse_enabled ? 1 : 0)
+        << "\nx_hold_ratio=" << std::setprecision(17) << config.x_hold_ratio;
+    if (config.map_y) output << "\ny_pulse_enabled=" << (config.y_pulse_enabled ? 1 : 0)
+        << "\ny_hold_ratio=" << config.y_hold_ratio;
+    output << "\npulse_period_ms=" << config.pulse_period_ms << '\n';
 }
 
 void save_config(const std::filesystem::path& path, const configuration& config) {
@@ -272,10 +357,66 @@ configuration configure(configuration defaults, bool text_mode) {
     for (;;) {
         defaults.left_key = ask("Left movement key", defaults.left_key);
         defaults.right_key = ask("Right movement key", defaults.right_key);
+        if (defaults.map_y) {
+            defaults.up_key = ask("Up movement key (Y-)", defaults.up_key);
+            defaults.down_key = ask("Down movement key (Y+)", defaults.down_key);
+            constexpr std::array labels{"Left mouse button (LMB)", "Right mouse button (RMB)",
+                "Middle mouse button (CMB)", "Side mouse button 1 (X1)", "Side mouse button 2 (X2)"};
+            for (std::size_t index = 0; index < labels.size(); ++index)
+                defaults.mouse_keys[index] = ask(labels[index], defaults.mouse_keys[index]);
+            defaults.wheel_keys[0] = ask("Wheel scroll up", defaults.wheel_keys[0]);
+            defaults.wheel_keys[1] = ask("Wheel scroll down", defaults.wheel_keys[1]);
+        }
         defaults.toggle_key = ask("Toggle key", defaults.toggle_key);
-        try { validate(defaults); return defaults; }
+        try { validate(defaults); break; }
         catch (const std::exception& error) { std::cout << error.what() << "; please enter keys again.\n"; }
     }
+    auto read_setting = [&]() {
+        std::string answer;
+        if (!live_console) {
+            if (!std::getline(std::cin, answer)) throw std::runtime_error("Configuration input ended before confirmation");
+            return answer;
+        }
+        for (;;) {
+            INPUT_RECORD record{};
+            DWORD read = 0;
+            if (!ReadConsoleInputW(input, &record, 1, &read)) throw std::runtime_error("Cannot read console key event");
+            if (record.EventType != KEY_EVENT || !record.Event.KeyEvent.bKeyDown) continue;
+            const auto& key = record.Event.KeyEvent;
+            if (key.wVirtualKeyCode == VK_RETURN) { std::cout << '\n'; return answer; }
+            if (key.wVirtualKeyCode == VK_BACK) {
+                if (!answer.empty()) answer.pop_back();
+                continue;
+            }
+            const auto character = key.uChar.UnicodeChar;
+            if (character >= 32 && character <= 126) answer.push_back(static_cast<char>(character));
+        }
+    };
+    auto ask_switch = [&](const char* label, bool current) {
+        for (;;) {
+            std::cout << label << " (0/1, Enter keeps " << (current ? 1 : 0) << "): " << std::flush;
+            const auto answer = read_setting();
+            if (trim(answer).empty()) return current;
+            try { return parse_switch(trim(answer)); }
+            catch (const std::exception& error) { std::cout << error.what() << '\n'; }
+        }
+    };
+    auto ask_ratio = [&](const char* label, double current) {
+        for (;;) {
+            std::cout << label << " (0..1, Enter keeps " << current << "): " << std::flush;
+            const auto answer = read_setting();
+            if (trim(answer).empty()) return current;
+            try { return parse_ratio(trim(answer)); }
+            catch (const std::exception& error) { std::cout << error.what() << '\n'; }
+        }
+    };
+    defaults.x_pulse_enabled = ask_switch("X pulse enabled", defaults.x_pulse_enabled);
+    defaults.x_hold_ratio = ask_ratio("X hold ratio", defaults.x_hold_ratio);
+    if (defaults.map_y) {
+        defaults.y_pulse_enabled = ask_switch("Y pulse enabled", defaults.y_pulse_enabled);
+        defaults.y_hold_ratio = ask_ratio("Y hold ratio", defaults.y_hold_ratio);
+    }
+    return defaults;
 }
 
 std::filesystem::path executable_directory() {

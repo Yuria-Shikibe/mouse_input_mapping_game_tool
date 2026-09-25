@@ -5,6 +5,7 @@
 #include <interception.h>
 
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <bit>
 #include <cstring>
@@ -199,12 +200,12 @@ void check_driver() {
                  "This checks connectivity only; verify actual X suppression with raw_input_probe.\n";
 }
 
-void run(const configuration& config) {
+void run(const configuration& config, const game_command* game) {
     validate(config);
     runtime_environment environment;
     driver_session session;
-    motion_filter filter(config.filter);
-    key_router router(config.left_key, config.right_key);
+    axis_mapping axis(config.filter, config.left_key, config.right_key,
+        config.x_pulse_enabled, config.x_hold_ratio, config.pulse_period_ms);
     toggle_latch toggle;
     bool enabled = false;
     bool absolute_warning = false;
@@ -213,10 +214,24 @@ void run(const configuration& config) {
     session.enable_filters();
     std::cout << "OFF - press the toggle key to enable. Ctrl+C exits.\n" << std::flush;
     try {
+        std::unique_ptr<game_process> child;
+        if (game) child = std::make_unique<game_process>(*game);
         for (;;) {
-            if (stop_requested.load()) break;
-            if (enabled) router.set_direction(filter.tick(clock_type::now()), output_keyboard, send_key);
-            const auto device = session.api.wait_with_timeout(session.context, 4);
+            if (stop_requested.load()) {
+                if (child) std::cout << "Daemon: mapping stopped; game process continues.\n" << std::flush;
+                break;
+            }
+            if (child && child->exited()) {
+                std::cout << "Daemon: game process exited; stopping mapping.\n" << std::flush;
+                break;
+            }
+            if (enabled) axis.tick(clock_type::now(), output_keyboard, send_key);
+            unsigned int wait_ms = 4;
+            if (enabled) if (const auto due = axis.deadline()) {
+                const auto remaining = std::chrono::duration_cast<milliseconds>(*due - clock_type::now()).count();
+                wait_ms = static_cast<unsigned int>(std::clamp<std::int64_t>(remaining, 1, 4));
+            }
+            const auto device = session.api.wait_with_timeout(session.context, wait_ms);
             if (device == 0) continue;
             alignas(InterceptionMouseStroke) std::array<char, sizeof(InterceptionMouseStroke) * 32> buffer{};
             const auto count = session.api.receive(session.context, device, reinterpret_cast<InterceptionStroke*>(buffer.data()), 32);
@@ -234,8 +249,7 @@ void run(const configuration& config) {
                                 std::cout << "OFF - release mapped physical keys, then press toggle again.\n" << std::flush;
                                 continue;
                             }
-                            router.set_direction(direction::idle, output_keyboard, send_key);
-                            filter.reset();
+                            axis.release(output_keyboard, send_key);
                             enabled = !enabled;
                             if (enabled) output_keyboard = device;
                             // Play asynchronously so feedback never waits for the sound to finish.
@@ -243,14 +257,14 @@ void run(const configuration& config) {
                                 SND_ALIAS | SND_ASYNC | SND_NODEFAULT | SND_SYSTEM);
                             std::cout << (enabled ? "ON\n" : "OFF\n") << std::flush;
                         }
-                    } else if (!simple || !router.physical({device, code, down}, send_key)) {
+                    } else if (!simple || !axis.physical({device, code, down}, send_key)) {
                         session.forward(device, stroke);
                     }
                 } else {
                     InterceptionMouseStroke stroke{};
                     std::memcpy(&stroke, buffer.data() + index * sizeof(stroke), sizeof(stroke));
                     if (enabled && !(stroke.flags & INTERCEPTION_MOUSE_MOVE_ABSOLUTE)) {
-                        router.set_direction(filter.update(stroke.x, clock_type::now()), output_keyboard, send_key);
+                        axis.update(stroke.x, clock_type::now(), output_keyboard, send_key);
                         stroke.x = 0;
                     } else if (enabled && !absolute_warning && (stroke.flags & INTERCEPTION_MOUSE_MOVE_ABSOLUTE)) {
                         absolute_warning = true;
@@ -259,15 +273,15 @@ void run(const configuration& config) {
                     session.forward(device, stroke);
                 }
                 // Also tick under sustained traffic, where the wait never times out.
-                if (enabled) router.set_direction(filter.tick(clock_type::now()), output_keyboard, send_key);
+                if (enabled) axis.tick(clock_type::now(), output_keyboard, send_key);
             }
         }
     } catch (...) {
-        try { router.set_direction(direction::idle, output_keyboard, send_key); }
+        try { axis.release(output_keyboard, send_key); }
         catch (const std::exception& error) { std::cerr << "Key cleanup failed: " << error.what() << '\n'; }
         throw;
     }
-    router.set_direction(direction::idle, output_keyboard, send_key);
+    axis.release(output_keyboard, send_key);
     std::cout << "OFF - mapping keys released.\n";
 }
 
