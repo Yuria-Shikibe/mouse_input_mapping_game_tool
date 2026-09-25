@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.24)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
     message(FATAL_ERROR "Use an out-of-source build: cmake -S . -B build/release")
 endif()
-project(mouse_input_mapping VERSION 1.1.0 LANGUAGES CXX RC)
+project(mouse_input_mapping VERSION 0.0.0 LANGUAGES CXX RC)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "Windows x64 is required")
