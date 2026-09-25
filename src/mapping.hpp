@@ -26,7 +26,11 @@ struct filter_settings {
 
 class motion_filter {
 public:
-    explicit motion_filter(filter_settings settings = {}) : settings_(settings) {}
+    explicit motion_filter(filter_settings settings = {}, bool pulse = false)
+        : settings_(settings), preserve_pending_(pulse) {
+        // Slow motion needs time to cross the same noise threshold as fast motion.
+        if (pulse) settings_.window_ms = std::max({settings_.window_ms, 2 * settings_.release_ms, 120});
+    }
 
     direction update(std::int32_t delta_x, time_point now) {
         confirmed_counts_ = 0;
@@ -52,7 +56,14 @@ public:
             samples_.pop_front();
         }
         if (direction_ != direction::idle && now - last_confirmed_ >= milliseconds(settings_.release_ms)) {
-            reset();
+            if (preserve_pending_) {
+                // Direction lifetime and unconfirmed displacement have separate
+                // clocks. Only a new nonzero sample can confirm the next direction.
+                direction_ = direction::idle;
+                confirmed_counts_ = 0;
+            } else {
+                reset();
+            }
         }
         return direction_;
     }
@@ -80,6 +91,7 @@ private:
         total_ = 0;
     }
     filter_settings settings_;
+    bool preserve_pending_;
     std::deque<sample> samples_;
     std::int64_t total_ = 0;
     std::int64_t confirmed_counts_ = 0;
@@ -153,8 +165,8 @@ class axis_mapping {
 public:
     axis_mapping(filter_settings filter, key_code negative, key_code positive,
                  bool pulse, double hold_ratio, int period_ms)
-        : filter_(filter), router_(negative, positive), pulse_(pulse), ratio_(hold_ratio),
-          period_(period_ms) {}
+        : filter_(filter, pulse), router_(negative, positive), pulse_(pulse), ratio_(hold_ratio),
+          period_(period_ms), pulse_counts_(filter.start_counts) {}
 
     template<class Sink>
     void update(std::int32_t delta, time_point now, int device, Sink&& send) {
@@ -170,7 +182,8 @@ public:
                 due_ = now + up_time();
             }
         }
-        if (counts && ratio_ > 0) credit_ = std::min<std::int64_t>(10, credit_ + counts);
+        // One confirmed movement is enough to respond; retain at most one pulse.
+        if (counts && ratio_ > 0) credit_ = std::min<std::int64_t>(pulse_counts_, credit_ + counts);
         service(now, device, send);
     }
 
@@ -197,7 +210,7 @@ public:
     bool physical(key_event event, Sink&& send) { return router_.physical(event, send); }
 
     std::optional<time_point> deadline() const {
-        return pulse_ && (pressed_ || credit_ >= 10) ? due_ : std::nullopt;
+        return pulse_ && (pressed_ || credit_ >= pulse_counts_) ? due_ : std::nullopt;
     }
 
 private:
@@ -219,10 +232,10 @@ private:
             due_ = now + up_time();
         }
         if (!pressed_ && direction_ != direction::idle && ratio_ > 0
-            && credit_ >= 10 && (!due_ || now >= *due_)) {
+            && credit_ >= pulse_counts_ && (!due_ || now >= *due_)) {
             router_.set_direction(direction_, device, send);
             pressed_ = true;
-            credit_ -= 10;
+            credit_ -= pulse_counts_;
             due_ = now + down_time();
         }
     }
@@ -231,6 +244,7 @@ private:
     bool pulse_;
     double ratio_;
     int period_;
+    int pulse_counts_;
     direction direction_ = direction::idle;
     std::int64_t credit_ = 0;
     bool pressed_ = false;
