@@ -10,7 +10,7 @@ class xy_mapping {
 public:
     explicit xy_mapping(const configuration& config)
         : horizontal_(config.filter, config.left_key, config.right_key, config.x_pulse_enabled,
-              config.x_hold_ratio, config.pulse_period_ms),
+              config.x_hold_ratio, config.pulse_period_ms, config.x_keyboard_override_enabled),
           vertical_(config.filter, config.up_key, config.down_key, config.y_pulse_enabled,
               config.y_hold_ratio, config.pulse_period_ms), buttons_(config.mouse_keys),
           wheel_(config.wheel_keys[0], config.wheel_keys[1]) {}

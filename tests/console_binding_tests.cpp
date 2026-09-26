@@ -37,7 +37,7 @@ int child_test() {
     key(VK_F8, 0x42, true);
     key(VK_F8, 0x42, false);
     confirm();
-    for (int i = 0; i < 2; ++i) confirm(); // Keep default X pulse settings.
+    for (int i = 0; i < 2; ++i) confirm(); // Repeated Enter events keep all three X settings.
     DWORD written = 0;
     if (!WriteConsoleInputW(input, records.data(), static_cast<DWORD>(records.size()), &written)) {
         std::cerr << "WriteConsoleInput failed: " << GetLastError() << '\n';

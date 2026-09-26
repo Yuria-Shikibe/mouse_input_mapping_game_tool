@@ -55,6 +55,7 @@ int wmain(int argc, wchar_t** argv) {
             << " Y-=" << describe_key(config.up_key) << " Y+=" << describe_key(config.down_key)
             << " Toggle=" << describe_key(config.toggle_key) << '\n';
         std::cout << "X=" << (config.x_pulse_enabled ? "pulse" : "hold") << " ratio=" << config.x_hold_ratio
+            << " keyboard-override=" << (config.x_keyboard_override_enabled ? "on" : "off")
             << " Y=" << (config.y_pulse_enabled ? "pulse" : "hold") << " ratio=" << config.y_hold_ratio
             << " period=" << config.pulse_period_ms << "ms\n";
         for (std::size_t index = 0; index < mouse_key_fields.size(); ++index)

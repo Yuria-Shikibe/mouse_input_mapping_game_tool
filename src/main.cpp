@@ -70,7 +70,9 @@ int wmain(int argc, wchar_t** argv) {
         std::cout << "Left=" << describe_key(config.left_key) << " Right=" << describe_key(config.right_key)
             << " Toggle=" << describe_key(config.toggle_key) << '\n';
         std::cout << "X=" << (config.x_pulse_enabled ? "pulse" : "hold")
-            << " ratio=" << config.x_hold_ratio << " period=" << config.pulse_period_ms << "ms\n";
+            << " ratio=" << config.x_hold_ratio << " keyboard-override="
+            << (config.x_keyboard_override_enabled ? "on" : "off")
+            << " period=" << config.pulse_period_ms << "ms\n";
         if (daemon) {
             if (!driver_available()) throw std::runtime_error("Daemon driver unavailable; run this tool normally to install it, then restart Windows");
         } else if (!ensure_driver()) return 0;

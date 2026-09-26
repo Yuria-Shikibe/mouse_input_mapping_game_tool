@@ -205,7 +205,8 @@ void run(const configuration& config, const game_command* game) {
     runtime_environment environment;
     driver_session session;
     axis_mapping axis(config.filter, config.left_key, config.right_key,
-        config.x_pulse_enabled, config.x_hold_ratio, config.pulse_period_ms);
+        config.x_pulse_enabled, config.x_hold_ratio, config.pulse_period_ms,
+        config.x_keyboard_override_enabled);
     toggle_latch toggle;
     bool enabled = false;
     bool absolute_warning = false;

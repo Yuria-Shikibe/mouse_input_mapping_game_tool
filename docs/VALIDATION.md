@@ -2,6 +2,12 @@
 
 此文记录各次验证的实际范围，不代表所有系统或游戏均已验证。使用与构建步骤见 [README](../README.md)。
 
+## 2026-09-26 X 轴键盘优先互斥
+
+- 新增默认开启的 `x_keyboard_override_enabled`，内核版与用户态版共用状态机：实体左/右映射键按住期间暂停鼠标 X 合成输出，最后一个实体键松开时恢复仍有效的鼠标方向。
+- 使用 MSVC 19.50、CMake/Ninja 完成 Debug 构建，CTest **11/11 通过**。回归测试覆盖反方向覆盖、同方向所有权接管、多键盘按住、方向过期不恢复、原输出键盘恢复、配置往返/非法值和用户态键盘钩子路径。
+- 状态机和用户态回调测试使用内存输出端，内核集成使用模拟 Interception DLL；未执行真实鼠标、真实按键注入、目标游戏或反作弊环境验证。
+
 ## 2026-09-25 双 target 与用户态 XY / 鼠标五键
 
 - 原 target 改名为 `mouse_input_mapping_kernel`，保留 X 过滤、自动驱动部署和 `config.ini`；新增 `mouse_input_mapping_user`，独立使用 `config.user.ini`，以 Raw Input + SendInput 映射 XY 和 LMB/RMB/CMB/X1/X2。

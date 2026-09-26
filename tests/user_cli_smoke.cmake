@@ -1,7 +1,7 @@
 file(MAKE_DIRECTORY "${test_dir}/app" "${test_dir}/cwd")
 file(COPY_FILE "${app}" "${test_dir}/app/mouse_input_mapping_user.exe")
 set(executable "${test_dir}/app/mouse_input_mapping_user.exe")
-file(WRITE "${test_dir}/answers.txt" "LEFT\n\nRIGHT\n\nUP\n\nDOWN\n\nF1\n\nF2\n\nF3\n\nF4\n\nF5\n\nF6\n\nF7\n\nF9\n\n\n\n\n\n")
+file(WRITE "${test_dir}/answers.txt" "LEFT\n\nRIGHT\n\nUP\n\nDOWN\n\nF1\n\nF2\n\nF3\n\nF4\n\nF5\n\nF6\n\nF7\n\nF9\n\n\n\n\n\n\n")
 execute_process(COMMAND "${executable}" --configure-text
     WORKING_DIRECTORY "${test_dir}/cwd" INPUT_FILE "${test_dir}/answers.txt"
     RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error TIMEOUT 10)
@@ -11,7 +11,7 @@ endif()
 file(READ "${test_dir}/app/config.user.ini" config)
 foreach(field "left_key=0xe04b" "right_key=0xe04d" "up_key=0xe048" "down_key=0xe050" "toggle_key=0x0043"
         "lmb_key=0x003b" "rmb_key=0x003c" "cmb_key=0x003d" "x1_key=0x003e" "x2_key=0x003f"
-        "wheel_up_key=0x0040" "wheel_down_key=0x0041")
+        "wheel_up_key=0x0040" "wheel_down_key=0x0041" "x_keyboard_override_enabled=1")
     if(NOT config MATCHES "${field}")
         message(FATAL_ERROR "Missing user binding ${field}: ${config}")
     endif()

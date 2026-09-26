@@ -109,7 +109,8 @@ struct key_event {
 // change the recorded OS state, so cleanup can retry the outstanding transition.
 class key_router {
 public:
-    key_router(key_code left, key_code right) : codes_{left, right} {}
+    key_router(key_code left, key_code right, bool keyboard_override = false)
+        : codes_{left, right}, keyboard_override_(keyboard_override) {}
 
     template<class sink_type>
     bool physical(key_event event, sink_type&& send) {
@@ -119,7 +120,7 @@ public:
         const bool repeated = physical_[event.device - 1][index] && event.down;
         physical_[event.device - 1][index] = event.down;
         const bool previous = output_down_[index];
-        sync(index, event.device, send);
+        reconcile(send);
         // A key may already have been held before the program started. Its
         // first observed release must still reach Windows.
         if (!event.down && !previous && !output_down_[index]) send(event);
@@ -131,10 +132,8 @@ public:
     template<class sink_type>
     void set_direction(direction next, int device, sink_type&& send) {
         desired_ = next;
-        // Release the opposite key before pressing a new one.
-        const int first = next == direction::left ? 1 : 0;
-        sync(first, device, send);
-        sync(1 - first, device, send);
+        if (device >= 1 && device <= 10) desired_device_ = device;
+        reconcile(send);
     }
 
 private:
@@ -142,30 +141,50 @@ private:
         for (const auto& keyboard : physical_) if (keyboard[index]) return true;
         return false;
     }
+    int physical_device(int index) const {
+        for (std::size_t device = 0; device < physical_.size(); ++device)
+            if (physical_[device][index]) return static_cast<int>(device + 1);
+        return 0;
+    }
+    bool wanted(int index) const {
+        const bool blocked = keyboard_override_ && (physically_down(0) || physically_down(1));
+        return physically_down(index) || (!blocked
+            && ((index == 0 && desired_ == direction::left)
+                || (index == 1 && desired_ == direction::right)));
+    }
     template<class sink_type>
-    void sync(int index, int device, sink_type&& send) {
-        const bool wanted = physically_down(index)
-            || (index == 0 && desired_ == direction::left)
-            || (index == 1 && desired_ == direction::right);
-        if (wanted == output_down_[index]) return;
-        if (wanted && (device < 1 || device > 10)) throw std::runtime_error("No output keyboard selected");
-        send(key_event{wanted ? device : output_device_[index], codes_[index], wanted});
-        output_down_[index] = wanted;
-        if (wanted) output_device_[index] = device;
+    void sync(int index, bool next, sink_type&& send) {
+        if (next == output_down_[index]) return;
+        const int device = next && physically_down(index) ? physical_device(index) : desired_device_;
+        if (next && (device < 1 || device > 10)) throw std::runtime_error("No output keyboard selected");
+        send(key_event{next ? device : output_device_[index], codes_[index], next});
+        output_down_[index] = next;
+        if (next) output_device_[index] = device;
+    }
+    template<class sink_type>
+    void reconcile(sink_type&& send) {
+        const std::array next{wanted(0), wanted(1)};
+        // Always release stale ownership before pressing a replacement.
+        for (int index = 0; index < 2; ++index)
+            if (!next[index]) sync(index, false, send);
+        for (int index = 0; index < 2; ++index)
+            if (next[index]) sync(index, true, send);
     }
     std::array<key_code, 2> codes_;
     std::array<std::array<bool, 2>, 10> physical_{};
     std::array<bool, 2> output_down_{};
     std::array<int, 2> output_device_{};
     direction desired_ = direction::idle;
+    int desired_device_ = 0;
+    bool keyboard_override_ = false;
 };
 
 // One direction pair, with optional displacement-driven key pulses.
 class axis_mapping {
 public:
     axis_mapping(filter_settings filter, key_code negative, key_code positive,
-                 bool pulse, double hold_ratio, int period_ms)
-        : filter_(filter, pulse), router_(negative, positive), pulse_(pulse), ratio_(hold_ratio),
+                 bool pulse, double hold_ratio, int period_ms, bool keyboard_override = false)
+        : filter_(filter, pulse), router_(negative, positive, keyboard_override), pulse_(pulse), ratio_(hold_ratio),
           period_(period_ms), pulse_counts_(filter.start_counts) {}
 
     template<class Sink>

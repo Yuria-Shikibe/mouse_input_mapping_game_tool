@@ -20,6 +20,7 @@ struct configuration {
     std::array<key_code, 2> wheel_keys{0x13, 0x13}; // Up/down R
     filter_settings filter;
     bool x_pulse_enabled = false;
+    bool x_keyboard_override_enabled = true;
     bool y_pulse_enabled = true;
     double x_hold_ratio = 1.0;
     double y_hold_ratio = 0.65;

@@ -78,6 +78,19 @@ int main() {
         key(config.toggle_key, true);
         require(state.mapping != nullptr, "Toggle repeat disabled mapping");
         key(config.toggle_key, false);
+        mouse(3, 0);
+        require(sent.size() == 1 && sent.back().ki.wScan == config.right_key,
+            "Initial X mapping output failed");
+        require(key(config.left_key, true) == 1 && sent.size() == 3
+            && sent[1].ki.wScan == config.right_key && (sent[1].ki.dwFlags & KEYEVENTF_KEYUP)
+            && sent[2].ki.wScan == config.left_key && !(sent[2].ki.dwFlags & KEYEVENTF_KEYUP),
+            "Physical X key did not override user-mode mapping");
+        require(key(config.left_key, false) == 1 && sent.size() == 5
+            && sent[3].ki.wScan == config.left_key && (sent[3].ki.dwFlags & KEYEVENTF_KEYUP)
+            && sent[4].ki.wScan == config.right_key && !(sent[4].ki.dwFlags & KEYEVENTF_KEYUP),
+            "User-mode X mapping did not resume after physical release");
+        state.mapping->release(send_key);
+        sent.clear();
         mouse(-3, -3, RI_MOUSE_LEFT_BUTTON_DOWN | RI_MOUSE_BUTTON_5_DOWN);
         require(sent.size() == 4, "Combined XY/buttons raw packet lost events");
         require(sent[0].ki.wScan == config.mouse_keys[0] && sent[1].ki.wScan == 0x4d

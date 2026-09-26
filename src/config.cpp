@@ -199,6 +199,7 @@ configuration read_config(std::istream& input, bool map_y, bool require_bindings
             else if (name == "reverse_counts") config.filter.reverse_counts = parse_integer(value);
             else if (name == "release_ms") config.filter.release_ms = parse_integer(value);
             else if (name == "x_pulse_enabled") config.x_pulse_enabled = parse_switch(value);
+            else if (name == "x_keyboard_override_enabled") config.x_keyboard_override_enabled = parse_switch(value);
             else if (map_y && name == "y_pulse_enabled") config.y_pulse_enabled = parse_switch(value);
             else if (name == "x_hold_ratio") config.x_hold_ratio = parse_ratio(value);
             else if (map_y && name == "y_hold_ratio") config.y_hold_ratio = parse_ratio(value);
@@ -268,6 +269,7 @@ void write_config(std::ostream& output, const configuration& config) {
         << "\nreverse_counts=" << config.filter.reverse_counts
         << "\nrelease_ms=" << config.filter.release_ms
         << "\nx_pulse_enabled=" << (config.x_pulse_enabled ? 1 : 0)
+        << "\nx_keyboard_override_enabled=" << (config.x_keyboard_override_enabled ? 1 : 0)
         << "\nx_hold_ratio=" << std::setprecision(17) << config.x_hold_ratio;
     if (config.map_y) output << "\ny_pulse_enabled=" << (config.y_pulse_enabled ? 1 : 0)
         << "\ny_hold_ratio=" << config.y_hold_ratio;
@@ -411,6 +413,8 @@ configuration configure(configuration defaults, bool text_mode) {
         }
     };
     defaults.x_pulse_enabled = ask_switch("X pulse enabled", defaults.x_pulse_enabled);
+    defaults.x_keyboard_override_enabled = ask_switch(
+        "X keyboard override enabled", defaults.x_keyboard_override_enabled);
     defaults.x_hold_ratio = ask_ratio("X hold ratio", defaults.x_hold_ratio);
     if (defaults.map_y) {
         defaults.y_pulse_enabled = ask_switch("Y pulse enabled", defaults.y_pulse_enabled);

@@ -1,6 +1,6 @@
 file(MAKE_DIRECTORY "${test_dir}/app" "${test_dir}/cwd")
 file(COPY_FILE "${app}" "${test_dir}/app/mouse_input_mapping.exe")
-file(WRITE "${test_dir}/answers.txt" "LEFT\n\nRIGHT\n\nF8\n\n\n\n")
+file(WRITE "${test_dir}/answers.txt" "LEFT\n\nRIGHT\n\nF8\n\n\n\n\n")
 execute_process(COMMAND "${test_dir}/app/mouse_input_mapping.exe" --configure
     WORKING_DIRECTORY "${test_dir}/cwd" INPUT_FILE "${test_dir}/answers.txt"
     RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error TIMEOUT 10)
@@ -13,6 +13,9 @@ endif()
 file(READ "${test_dir}/app/config.ini" config)
 if(NOT config MATCHES "left_key=0xe04b" OR NOT config MATCHES "right_key=0xe04d")
     message(FATAL_ERROR "Configuration saved wrong keys: ${config}")
+endif()
+if(NOT config MATCHES "x_keyboard_override_enabled=1")
+    message(FATAL_ERROR "X keyboard override default was not saved: ${config}")
 endif()
 execute_process(COMMAND "${test_dir}/app/mouse_input_mapping.exe" --check
     RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error TIMEOUT 10)

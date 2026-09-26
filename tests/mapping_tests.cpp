@@ -110,6 +110,32 @@ void test_keys() {
     extended.set_direction(direction::idle, 3, send);
     require(events.back().code == 0xe04b && !events.back().down, "Extended key lost scan code prefix");
 
+    std::vector<key_event> exclusive_events;
+    auto exclusive_send = [&](key_event event) { exclusive_events.push_back(event); };
+    key_router exclusive(0x1e, 0x20, true);
+    exclusive.set_direction(direction::right, 1, exclusive_send);
+    exclusive.physical({2, 0x1e, true}, exclusive_send);
+    require(exclusive_events.size() == 3 && exclusive_events[1].code == 0x20
+        && !exclusive_events[1].down && exclusive_events[2].code == 0x1e
+        && exclusive_events[2].down, "Physical left did not override mapped right");
+    exclusive.physical({2, 0x1e, false}, exclusive_send);
+    require(exclusive_events.size() == 5 && exclusive_events[3].code == 0x1e
+        && !exclusive_events[3].down && exclusive_events[4].code == 0x20
+        && exclusive_events[4].down && exclusive_events[4].device == 1,
+        "Mapped direction did not resume on its original keyboard");
+    exclusive.physical({2, 0x20, true}, exclusive_send);
+    exclusive.physical({2, 0x20, false}, exclusive_send);
+    require(exclusive_events.size() == 5, "Same-direction physical ownership emitted transitions");
+    exclusive.physical({2, 0x1e, true}, exclusive_send);
+    exclusive.physical({3, 0x1e, true}, exclusive_send);
+    const auto first_release = exclusive_events.size();
+    exclusive.physical({2, 0x1e, false}, exclusive_send);
+    require(exclusive_events.size() == first_release, "First keyboard release ended shared override");
+    exclusive.set_direction(direction::idle, 1, exclusive_send);
+    exclusive.physical({3, 0x1e, false}, exclusive_send);
+    require(exclusive_events.size() == first_release + 1 && !exclusive_events.back().down
+        && exclusive_events.back().code == 0x1e, "Expired mapping resumed after keyboard override");
+
     toggle_latch toggle;
     require(toggle.update(1, true), "First toggle press ignored");
     require(!toggle.update(1, true), "Autorepeat toggled mapping");
@@ -128,7 +154,7 @@ void test_xy() {
     const auto loaded = read_config(serialized, true);
     require(loaded.map_y && loaded.up_key == config.up_key && loaded.down_key == config.down_key
         && loaded.mouse_keys == config.mouse_keys && loaded.wheel_keys == config.wheel_keys
-        && !loaded.y_pulse_enabled,
+        && loaded.x_keyboard_override_enabled && !loaded.y_pulse_enabled,
         "XY/button config round trip failed");
     for (const auto* text : {"up_key=A", "down_key=S", "up_key=F8", "down_key=PAUSE",
             "lmb_key=A", "rmb_key=A", "cmb_key=F8", "x1_key=PAUSE", "x2_key=F\nx2_key=G",
@@ -138,7 +164,9 @@ void test_xy() {
     const auto shared = read_config(shared_wheel, true);
     require(shared.wheel_keys[0] == shared.wheel_keys[1], "Shared wheel target rejected");
     std::istringstream legacy("left_key=W\n");
-    require(read_config(legacy).left_key == parse_key("W"), "Kernel binding collided with unused Y defaults");
+    const auto legacy_config = read_config(legacy);
+    require(legacy_config.left_key == parse_key("W") && legacy_config.x_keyboard_override_enabled,
+        "Legacy config did not receive compatible defaults");
     xy_mapping mapping(config);
     std::vector<key_event> events;
     auto send = [&](key_event event) { events.push_back(event); };
@@ -341,13 +369,18 @@ void test_config() {
     write_config(serialized, config);
     const auto result = read_config(serialized);
     require(result.left_key == config.left_key && result.right_key == config.right_key
-        && result.toggle_key == config.toggle_key && result.filter.release_ms == 60, "Config round trip failed");
+        && result.toggle_key == config.toggle_key && result.filter.release_ms == 60
+        && result.x_keyboard_override_enabled, "Config round trip failed");
+    std::istringstream override_disabled("x_keyboard_override_enabled=0\n");
+    require(!read_config(override_disabled).x_keyboard_override_enabled,
+        "X keyboard override could not be disabled");
     const std::vector<std::string> invalid{
         "left_key=A\nright_key=A", "toggle_key=A", "unknown=1", "window_ms=0", "window_ms=1x",
         "start_counts=-1", "start_counts=7\nreverse_counts=6", "release_ms=20", "release_ms=2001",
         "left_key=0xe11d", "left_key=0x0000", "left_key=0x10000", "left_key=PAUSE",
         "toggle_key=Ctrl+F8", "left_key=A\nleft_key=D", "[invalid]", "left_key",
-        "window_ms=99999999999999999999", "x_pulse_enabled=2", "x_hold_ratio=-0.1", "x_hold_ratio=1.1",
+        "window_ms=99999999999999999999", "x_pulse_enabled=2", "x_keyboard_override_enabled=2",
+        "x_hold_ratio=-0.1", "x_hold_ratio=1.1",
         "x_hold_ratio=nan", "pulse_period_ms=1"
     };
     for (const auto& text : invalid) rejects([&] { std::istringstream input(text); read_config(input); }, "Invalid config accepted");
