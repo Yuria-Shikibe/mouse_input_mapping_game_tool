@@ -1,4 +1,4 @@
-# Package only the install tree: no tests, local configuration or build caches.
+# Package only the install tree: no local configuration or build caches.
 set(CPACK_GENERATOR ZIP)
 set(CPACK_PACKAGE_NAME "mouse_input_mapping")
 set(CPACK_PACKAGE_VENDOR "mo_yanxi")

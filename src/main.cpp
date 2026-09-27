@@ -1,21 +1,24 @@
 #include "config.hpp"
+#include "console_config.hpp"
 #include "runtime.hpp"
 #include "deployment.hpp"
 
 #include <windows.h>
 #include <iostream>
+#include <print>
 #include <string_view>
 
 int wmain(int argc, wchar_t** argv) {
     using namespace mouse_mapping;
     try {
-        auto path = executable_directory() / L"config.ini";
+        auto path = default_config_path();
         bool reconfigure = false;
         bool text_mode = false;
         bool check_only = false;
         bool install_only = false;
         game_command game;
         bool daemon = false;
+        auto priority = input_priority::normal;
         for (int index = 1; index < argc; ++index) {
             const std::wstring_view argument(argv[index]);
             if (argument == L"--help" || argument == L"-h") {
@@ -25,10 +28,11 @@ int wmain(int argc, wchar_t** argv) {
                     "       mouse_input_mapping_kernel --check\n\n"
                     "--configure  Press keys, confirm with Enter, save, and exit.\n"
                     "--configure-text  Type key names (for IDE consoles), confirm, and save.\n"
-                    "--config     Configuration file (default: config.ini beside the EXE).\n"
+                    "--config     Configuration file (default: config.ini; fallback: config.user.ini beside the EXE).\n"
                     "--check      Check the DLL/driver and list accessible input devices.\n\n"
                     "--install-driver  Install/repair the bundled driver (requests administrator access).\n\n"
                     "--daemon    Launch and monitor a game; configure keys and driver beforehand.\n\n"
+                    "--input-priority <normal|above-normal>  Input thread priority (default normal; before --daemon).\n"
                     "First run asks for keys. Default: A / D, toggle F8. Starts OFF.\n"
                     "X pulse defaults OFF; the configuration prompt accepts a 0..1 hold ratio.\n"
                     "Toggle is global and consumed; Ctrl+C exits from this console.\n"
@@ -41,6 +45,7 @@ int wmain(int argc, wchar_t** argv) {
             else if (argument == L"--check") check_only = true;
             else if (argument == L"--install-driver") install_only = true;
             else if (argument == L"--config" && index + 1 < argc) path = std::filesystem::absolute(argv[++index]);
+            else if (argument == L"--input-priority" && index + 1 < argc) priority = parse_input_priority(argv[++index]);
             else if (argument == L"--daemon") {
                 daemon = true;
                 for (++index; index < argc; ++index) game.emplace_back(argv[index]);
@@ -67,19 +72,21 @@ int wmain(int argc, wchar_t** argv) {
             std::wcout << L"Configuration saved: " << path.native() << L'\n';
             if (reconfigure) return 0;
         }
-        std::cout << "Left=" << describe_key(config.left_key) << " Right=" << describe_key(config.right_key)
-            << " Toggle=" << describe_key(config.toggle_key) << '\n';
-        std::cout << "X=" << (config.x_pulse_enabled ? "pulse" : "hold")
-            << " ratio=" << config.x_hold_ratio << " keyboard-override="
-            << (config.x_keyboard_override_enabled ? "on" : "off")
-            << " period=" << config.pulse_period_ms << "ms\n";
+        std::println("Left={} Right={} Toggle={}", describe_key(config.left_key), describe_key(config.right_key),
+            describe_key(config.toggle_key));
+        std::println("X={} ratio={} keyboard-override={} period={}ms",
+            config.x_pulse_enabled ? "pulse" : "hold", config.x_hold_ratio,
+            config.x_keyboard_override_enabled ? "on" : "off", config.pulse_period_ms);
+        std::println("X sensitivity={} full-speed={}counts/s start/reverse={}/{}",
+            config.x_pulse_enabled && config.x_curve.enabled ? "curve" : "fixed", config.x_curve.full_speed,
+            config.x_start_counts, config.x_reverse_counts);
         if (daemon) {
             if (!driver_available()) throw std::runtime_error("Daemon driver unavailable; run this tool normally to install it, then restart Windows");
         } else if (!ensure_driver()) return 0;
-        run(config, daemon ? &game : nullptr);
+        run(config, daemon ? &game : nullptr, priority);
         return 0;
     } catch (const std::exception& error) {
-        std::cerr << "Error: " << error.what() << '\n';
+        std::println(std::cerr, "Error: {}", error.what());
         return 1;
     }
 }

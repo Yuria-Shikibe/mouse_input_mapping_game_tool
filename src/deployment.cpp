@@ -6,6 +6,7 @@
 #include <shellapi.h>
 #include <objbase.h>
 #include <array>
+#include <format>
 #include <iostream>
 #include <system_error>
 #include <vector>
@@ -182,8 +183,9 @@ bool ensure_driver() {
         return false;
     }
     if (result != ERROR_SUCCESS && result != ERROR_SUCCESS_REBOOT_REQUIRED)
-        throw std::runtime_error("Driver installation failed (exit " + std::to_string(result)
-            + "). Run --install-driver from an Administrator terminal to retry. Windows has not been restarted.");
+        throw std::runtime_error(std::format(
+            "Driver installation failed (exit {}). Run --install-driver from an Administrator terminal to retry. "
+            "Windows has not been restarted.", result));
     std::cout << "Setup completed. Restart Windows once, then run this EXE again.\n"
                  "Configuration was preserved. This program will not restart Windows automatically.\n";
     return false;

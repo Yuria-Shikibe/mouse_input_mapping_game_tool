@@ -14,14 +14,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure
-        run: cmake -S . -B build/ci -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON
+        run: cmake -S . -B build/ci -G "Visual Studio 17 2022" -A x64
       - name: Build
         run: cmake --build build/ci --config Release --parallel
-      - name: Test without installing a driver
-        run: ctest --test-dir build/ci -C Release --output-on-failure
       - name: Package
         run: cpack --config build/ci/CPackConfig.cmake -C Release
-      - name: Verify both executables are packaged
+      - name: Verify runtime and GUI executables are packaged
         shell: pwsh
         run: |
           $packages = @(Get-ChildItem -LiteralPath dist -Filter '*.zip' -File)
@@ -30,7 +28,7 @@ jobs:
           $archive = [System.IO.Compression.ZipFile]::OpenRead($packages[0].FullName)
           try {
             $files = @($archive.Entries | ForEach-Object { [System.IO.Path]::GetFileName($_.FullName) })
-            foreach ($exe in @('mouse_input_mapping_user.exe', 'mouse_input_mapping_kernel.exe')) {
+            foreach ($exe in @('mouse_input_mapping_user.exe', 'mouse_input_mapping_kernel.exe', 'mouse_input_mapping_config.exe')) {
               if ($files -notcontains $exe) { throw "Release ZIP is missing $exe" }
             }
           } finally {

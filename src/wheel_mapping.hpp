@@ -1,7 +1,6 @@
 #pragma once
 #include "mapping.hpp"
-#include <deque>
-#include <map>
+#include <array>
 
 namespace mouse_mapping {
 // Vertical wheel notches are momentary presses. Keep fractional wheel travel
@@ -15,13 +14,13 @@ public:
     void update(std::uintptr_t device, std::int16_t delta, time_point now, Sink&& send) {
         auto& remainder = remainders_[device];
         remainder += delta;
-        while (remainder >= 120) {
-            if (pending_.size() < 8) pending_.push_back(direction::left);
-            remainder -= 120;
+        while (remainder >= wheel_delta) {
+            enqueue(direction::left);
+            remainder -= wheel_delta;
         }
-        while (remainder <= -120) {
-            if (pending_.size() < 8) pending_.push_back(same_key_ ? direction::left : direction::right);
-            remainder += 120;
+        while (remainder <= -wheel_delta) {
+            enqueue(same_key_ ? direction::left : direction::right);
+            remainder += wheel_delta;
         }
         tick(now, send);
     }
@@ -31,18 +30,17 @@ public:
         if (active_ && now >= due_) {
             router_.set_direction(direction::idle, 1, send);
             active_ = false;
-            due_ = now + milliseconds(10);
+            due_ = now + key_interval;
         }
-        if (!active_ && !pending_.empty() && now >= due_) {
-            router_.set_direction(pending_.front(), 1, send);
-            pending_.pop_front();
+        if (!active_ && pending_count_ != 0 && now >= due_) {
+            router_.set_direction(dequeue(), 1, send);
             active_ = true;
-            due_ = now + milliseconds(10);
+            due_ = now + key_interval;
         }
     }
 
     std::optional<time_point> deadline() const {
-        return active_ || !pending_.empty() ? std::optional<time_point>(due_) : std::nullopt;
+        return active_ || pending_count_ != 0 ? std::optional<time_point>(due_) : std::nullopt;
     }
 
     template<class Sink>
@@ -53,16 +51,35 @@ public:
     template<class Sink>
     void release(Sink&& send) {
         remainders_.clear();
-        pending_.clear();
+        pending_head_ = 0;
+        pending_count_ = 0;
         active_ = false;
         router_.set_direction(direction::idle, 1, send);
     }
 
 private:
+    static constexpr auto wheel_delta = 120;
+    static constexpr auto maximum_pending = std::size_t{8};
+    static constexpr auto key_interval = milliseconds{10};
+
+    void enqueue(direction value) noexcept {
+        if (pending_count_ == maximum_pending) return;
+        pending_[(pending_head_ + pending_count_) % maximum_pending] = value;
+        ++pending_count_;
+    }
+    direction dequeue() noexcept {
+        const auto value = pending_[pending_head_];
+        pending_head_ = (pending_head_ + 1) % maximum_pending;
+        --pending_count_;
+        return value;
+    }
+
     key_router router_;
-    bool same_key_;
-    std::map<std::uintptr_t, int> remainders_;
-    std::deque<direction> pending_;
+    const bool same_key_;
+    device_table<int> remainders_;
+    std::array<direction, maximum_pending> pending_{};
+    std::size_t pending_head_ = 0;
+    std::size_t pending_count_ = 0;
     bool active_ = false;
     time_point due_{};
 };

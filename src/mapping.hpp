@@ -1,9 +1,12 @@
 #pragma once
 
+#include "sensitivity_curve.hpp"
+#include "input_storage.hpp"
+#include <bit>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
-#include <deque>
 #include <algorithm>
 #include <optional>
 #include <stdexcept>
@@ -16,6 +19,14 @@ using time_point = clock_type::time_point;
 using milliseconds = std::chrono::milliseconds;
 
 enum class direction { idle, left, right };
+
+// Observes mouse intent before physical-key ownership is reconciled. Observers
+// must never interfere with input delivery or cleanup.
+struct direction_observer {
+    void* context = nullptr;
+    void (*changed)(void*, direction) noexcept = nullptr;
+    void operator()(direction value) const noexcept { if (changed) changed(context, value); }
+};
 
 struct filter_settings {
     int window_ms = 30;
@@ -30,9 +41,10 @@ public:
         : settings_(settings), preserve_pending_(pulse) {
         // Slow motion needs time to cross the same noise threshold as fast motion.
         if (pulse) settings_.window_ms = std::max({settings_.window_ms, 2 * settings_.release_ms, 120});
+        samples_.reserve(static_cast<std::size_t>(settings_.window_ms) * 16 + 1);
     }
 
-    direction update(std::int32_t delta_x, time_point now) {
+    direction update(double delta_x, time_point now) {
         confirmed_counts_ = 0;
         tick(now);
         if (delta_x == 0) return direction_;
@@ -55,6 +67,7 @@ public:
             total_ -= samples_.front().delta_x;
             samples_.pop_front();
         }
+        if (samples_.empty()) total_ = 0; // Discard floating-point subtraction residue.
         if (direction_ != direction::idle && now - last_confirmed_ >= milliseconds(settings_.release_ms)) {
             if (preserve_pending_) {
                 // Direction lifetime and unconfirmed displacement have separate
@@ -75,14 +88,19 @@ public:
         confirmed_counts_ = 0;
     }
 
-    std::int64_t take_confirmed_counts() {
+    double take_confirmed_counts() {
         const auto result = confirmed_counts_;
         confirmed_counts_ = 0;
         return result;
     }
 
+    std::optional<time_point> deadline() const {
+        return direction_ == direction::idle ? std::nullopt
+            : std::optional(last_confirmed_ + milliseconds(settings_.release_ms));
+    }
+
 private:
-    struct sample { time_point time; std::int32_t delta_x; };
+    struct sample { time_point time; double delta_x; };
     void confirm(direction next, time_point now) {
         confirmed_counts_ = total_ < 0 ? -total_ : total_;
         direction_ = next;
@@ -92,9 +110,9 @@ private:
     }
     filter_settings settings_;
     bool preserve_pending_;
-    std::deque<sample> samples_;
-    std::int64_t total_ = 0;
-    std::int64_t confirmed_counts_ = 0;
+    sample_ring<sample> samples_;
+    double total_ = 0;
+    double confirmed_counts_ = 0;
     direction direction_ = direction::idle;
     time_point last_confirmed_{};
 };
@@ -117,8 +135,10 @@ public:
         if (event.device < 1 || event.device > 10) return false;
         const int index = event.code == codes_[0] ? 0 : event.code == codes_[1] ? 1 : -1;
         if (index < 0) return false;
-        const bool repeated = physical_[event.device - 1][index] && event.down;
-        physical_[event.device - 1][index] = event.down;
+        const auto bit = static_cast<std::uint16_t>(1u << (event.device - 1));
+        const bool repeated = (physical_[index] & bit) && event.down;
+        if (event.down) physical_[index] |= bit;
+        else physical_[index] &= static_cast<std::uint16_t>(~bit);
         const bool previous = output_down_[index];
         reconcile(send);
         // A key may already have been held before the program started. Its
@@ -131,20 +151,25 @@ public:
 
     template<class sink_type>
     void set_direction(direction next, int device, sink_type&& send) {
+        const bool changed = desired_ != next;
         desired_ = next;
+        if (changed) observer_(next);
         if (device >= 1 && device <= 10) desired_device_ = device;
         reconcile(send);
     }
 
+    void observe(direction_observer observer) noexcept {
+        const bool changed = observer_.context != observer.context || observer_.changed != observer.changed;
+        observer_ = observer;
+        if (changed) observer_(desired_);
+    }
+
 private:
     bool physically_down(int index) const {
-        for (const auto& keyboard : physical_) if (keyboard[index]) return true;
-        return false;
+        return physical_[index] != 0;
     }
     int physical_device(int index) const {
-        for (std::size_t device = 0; device < physical_.size(); ++device)
-            if (physical_[device][index]) return static_cast<int>(device + 1);
-        return 0;
+        return physical_[index] ? std::countr_zero(physical_[index]) + 1 : 0;
     }
     bool wanted(int index) const {
         const bool blocked = keyboard_override_ && (physically_down(0) || physically_down(1));
@@ -171,27 +196,46 @@ private:
             if (next[index]) sync(index, true, send);
     }
     std::array<key_code, 2> codes_;
-    std::array<std::array<bool, 2>, 10> physical_{};
+    std::array<std::uint16_t, 2> physical_{};
     std::array<bool, 2> output_down_{};
     std::array<int, 2> output_device_{};
     direction desired_ = direction::idle;
     int desired_device_ = 0;
     bool keyboard_override_ = false;
+    direction_observer observer_;
 };
 
 // One direction pair, with optional displacement-driven key pulses.
 class axis_mapping {
 public:
+    void observe(direction_observer observer) noexcept { router_.observe(observer); }
     axis_mapping(filter_settings filter, key_code negative, key_code positive,
-                 bool pulse, double hold_ratio, int period_ms, bool keyboard_override = false)
+                 bool pulse, double hold_ratio, int period_ms, bool keyboard_override = false,
+                 sensitivity_settings sensitivity = {}, double smoothing_factor = 1.0)
         : filter_(filter, pulse), router_(negative, positive, keyboard_override), pulse_(pulse), ratio_(hold_ratio),
-          period_(period_ms), pulse_counts_(filter.start_counts) {}
+          period_(period_ms), pulse_counts_(filter.start_counts),
+          sensitivity_(std::move(sensitivity)), curve_(sensitivity_.points), active_ratio_(hold_ratio),
+          smoothing_factor_(smoothing_factor), smoothing_timeout_(filter.release_ms) {}
 
     template<class Sink>
     void update(std::int32_t delta, time_point now, int device, Sink&& send) {
+        expire_smoothing(now);
+        double input = 0;
+        // Only actual motion advances lerp; zero packets must not replay its tail.
+        if (delta != 0) {
+            last_motion_ = now;
+            smoothed_ = smoothing_factor_ == 1.0 ? static_cast<double>(delta)
+                : std::lerp(smoothed_, static_cast<double>(delta), smoothing_factor_);
+            input = smoothed_;
+        }
         const auto previous = direction_;
-        direction_ = filter_.update(delta, now);
+        direction_ = filter_.update(input, now);
         const auto counts = filter_.take_confirmed_counts();
+        if (pulse_ && sensitivity_.enabled) {
+            if (previous != direction::idle && direction_ != previous) clear_speed();
+            if (input) { speed_samples_.push_back({now, input}); speed_total_ += input; }
+            expire_speed(now);
+        }
         if (!pulse_) { router_.set_direction(direction_, device, send); return; }
         if (direction_ != previous) {
             credit_ = 0;
@@ -202,22 +246,26 @@ public:
             }
         }
         // One confirmed movement is enough to respond; retain at most one pulse.
-        if (counts && ratio_ > 0) credit_ = std::min<std::int64_t>(pulse_counts_, credit_ + counts);
+        if (counts && (sensitivity_.enabled || ratio_ > 0)) credit_ = std::min<double>(pulse_counts_, credit_ + counts);
         service(now, device, send);
     }
 
     template<class Sink>
     void tick(time_point now, int device, Sink&& send) {
+        expire_smoothing(now);
         const auto next = filter_.tick(now);
         if (!pulse_) { router_.set_direction(next, device, send); return; }
-        if (next == direction::idle) credit_ = 0;
+        if (next == direction::idle) { credit_ = 0; clear_speed(); }
         direction_ = next;
         service(now, device, send);
     }
 
     template<class Sink>
     void release(int device, Sink&& send) {
+        smoothed_ = 0;
+        last_motion_.reset();
         filter_.reset();
+        clear_speed();
         direction_ = direction::idle;
         credit_ = 0;
         pressed_ = false;
@@ -229,18 +277,20 @@ public:
     bool physical(key_event event, Sink&& send) { return router_.physical(event, send); }
 
     std::optional<time_point> deadline() const {
-        return pulse_ && (pressed_ || credit_ >= pulse_counts_) ? due_ : std::nullopt;
+        auto result = filter_.deadline();
+        if (pulse_ && (pressed_ || credit_ >= pulse_counts_) && due_ && (!result || *due_ < *result)) result = due_;
+        return result;
     }
 
 private:
     clock_type::duration down_time() const {
         const auto nanos = std::max<std::int64_t>(1000000,
-            static_cast<std::int64_t>(period_ * ratio_ * 1000000.0));
+            static_cast<std::int64_t>(period_ * active_ratio_ * 1000000.0));
         return std::chrono::duration_cast<clock_type::duration>(std::chrono::nanoseconds(nanos));
     }
     clock_type::duration up_time() const {
         const auto nanos = std::max<std::int64_t>(1000000,
-            static_cast<std::int64_t>(period_ * (1.0 - ratio_) * 1000000.0));
+            static_cast<std::int64_t>(period_ * (1.0 - active_ratio_) * 1000000.0));
         return std::chrono::duration_cast<clock_type::duration>(std::chrono::nanoseconds(nanos));
     }
     template<class Sink>
@@ -250,22 +300,52 @@ private:
             pressed_ = false;
             due_ = now + up_time();
         }
-        if (!pressed_ && direction_ != direction::idle && ratio_ > 0
+        if (!pressed_ && direction_ != direction::idle && (sensitivity_.enabled || ratio_ > 0)
             && credit_ >= pulse_counts_ && (!due_ || now >= *due_)) {
+            expire_speed(now);
+            const double next_ratio = sensitivity_.enabled
+                ? curve_.evaluate(std::abs(static_cast<double>(speed_total_)) / 0.03 / sensitivity_.full_speed)
+                : ratio_;
+            if (next_ratio <= 0) { credit_ = 0; return; }
             router_.set_direction(direction_, device, send);
+            active_ratio_ = next_ratio;
             pressed_ = true;
             credit_ -= pulse_counts_;
             due_ = now + down_time();
         }
     }
+    void clear_speed() { speed_samples_.clear(); speed_total_ = 0; }
+    void expire_speed(time_point now) {
+        while (!speed_samples_.empty() && now - speed_samples_.front().time >= milliseconds(30)) {
+            speed_total_ -= speed_samples_.front().delta;
+            speed_samples_.pop_front();
+        }
+        if (speed_samples_.empty()) speed_total_ = 0;
+    }
+    void expire_smoothing(time_point now) {
+        if (last_motion_ && now - *last_motion_ >= smoothing_timeout_) {
+            smoothed_ = 0;
+            last_motion_.reset();
+        }
+    }
+    struct speed_sample { time_point time; double delta; };
     motion_filter filter_;
     key_router router_;
     bool pulse_;
     double ratio_;
     int period_;
     int pulse_counts_;
+    sensitivity_settings sensitivity_;
+    sensitivity_curve curve_;
+    double active_ratio_;
+    double smoothing_factor_;
+    milliseconds smoothing_timeout_;
+    double smoothed_ = 0;
+    std::optional<time_point> last_motion_;
+    sample_ring<speed_sample> speed_samples_;
+    double speed_total_ = 0;
     direction direction_ = direction::idle;
-    std::int64_t credit_ = 0;
+    double credit_ = 0;
     bool pressed_ = false;
     std::optional<time_point> due_;
 };

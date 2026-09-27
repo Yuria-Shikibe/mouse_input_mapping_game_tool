@@ -9,11 +9,16 @@ namespace mouse_mapping {
 class xy_mapping {
 public:
     explicit xy_mapping(const configuration& config)
-        : horizontal_(config.filter, config.left_key, config.right_key, config.x_pulse_enabled,
-              config.x_hold_ratio, config.pulse_period_ms, config.x_keyboard_override_enabled),
-          vertical_(config.filter, config.up_key, config.down_key, config.y_pulse_enabled,
-              config.y_hold_ratio, config.pulse_period_ms), buttons_(config.mouse_keys),
+        : horizontal_(config.axis_filter(false), config.left_key, config.right_key, config.x_pulse_enabled,
+              config.x_hold_ratio, config.pulse_period_ms, config.x_keyboard_override_enabled, config.x_curve, config.x_smoothing_factor),
+          vertical_(config.axis_filter(true), config.up_key, config.down_key, config.y_pulse_enabled,
+              config.y_hold_ratio, config.pulse_period_ms, false, config.y_curve, config.y_smoothing_factor), buttons_(config.mouse_keys),
           wheel_(config.wheel_keys[0], config.wheel_keys[1]) {}
+
+    void observe(direction_observer x, direction_observer y) noexcept {
+        horizontal_.observe(x);
+        vertical_.observe(y);
+    }
 
     template<class Sink>
     void buttons(std::uintptr_t device, unsigned short flags, Sink&& send) {
@@ -25,8 +30,17 @@ public:
     }
     template<class Sink>
     void remove_mouse(std::uintptr_t device, Sink&& send) {
-        buttons_.remove(device, send);
+        // Axis motion is merged across mice; dropping one device invalidates
+        // both histories. Attempt every release even if a send fails.
+        std::exception_ptr failure;
+        try { horizontal_.release(1, send); }
+        catch (...) { failure = std::current_exception(); }
+        try { vertical_.release(1, send); }
+        catch (...) { if (!failure) failure = std::current_exception(); }
+        try { buttons_.remove(device, send); }
+        catch (...) { if (!failure) failure = std::current_exception(); }
         wheel_.remove(device);
+        if (failure) std::rethrow_exception(failure);
     }
 
     template<class Sink>

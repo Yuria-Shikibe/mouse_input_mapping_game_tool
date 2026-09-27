@@ -1,5 +1,7 @@
 #include "runtime.hpp"
 #include "deployment.hpp"
+#include "input_monitor.hpp"
+#include "input_schedule.hpp"
 #include <windows.h>
 #include <mmsystem.h>
 #include <interception.h>
@@ -9,6 +11,7 @@
 #include <atomic>
 #include <bit>
 #include <cstring>
+#include <format>
 #include <iostream>
 #include <memory>
 #include <system_error>
@@ -92,7 +95,7 @@ public:
     template<class stroke_type>
     void forward(int device, const stroke_type& stroke) {
         if (api.send(context, device, reinterpret_cast<const InterceptionStroke*>(&stroke), 1) != 1)
-            throw std::runtime_error("Driver input send failed (device " + std::to_string(device) + ")");
+            throw std::runtime_error(std::format("Driver input send failed (device {})", device));
     }
 
     void send_key(key_event event) {
@@ -197,16 +200,20 @@ void check_driver() {
     }
     if (keyboards == 0 || mice == 0) throw std::runtime_error("Driver opened, but no accessible keyboard or mouse was found");
     std::cout << "Driver is accessible. No input filters were enabled.\n"
-                 "This checks connectivity only; verify actual X suppression with raw_input_probe.\n";
+                 "This checks connectivity only; verify actual X suppression in your target application.\n";
 }
 
-void run(const configuration& config, const game_command* game) {
+void run(const configuration& config, const game_command* game, input_priority priority) {
     validate(config);
     runtime_environment environment;
+    input_thread_priority thread_priority(priority);
     driver_session session;
-    axis_mapping axis(config.filter, config.left_key, config.right_key,
+    monitor_publisher monitor;
+    monitor.start(config, false);
+    axis_mapping axis(config.axis_filter(false), config.left_key, config.right_key,
         config.x_pulse_enabled, config.x_hold_ratio, config.pulse_period_ms,
-        config.x_keyboard_override_enabled);
+        config.x_keyboard_override_enabled, config.x_curve, config.x_smoothing_factor);
+    axis.observe(monitor.observer(false));
     toggle_latch toggle;
     bool enabled = false;
     bool absolute_warning = false;
@@ -217,27 +224,39 @@ void run(const configuration& config, const game_command* game) {
     try {
         std::unique_ptr<game_process> child;
         if (game) child = std::make_unique<game_process>(*game);
+        auto maintenance = clock_type::now();
+        auto game_check = maintenance;
+        alignas(InterceptionMouseStroke) std::array<char, sizeof(InterceptionMouseStroke) * 32> buffer;
         for (;;) {
+            auto now = clock_type::now();
+            if (now >= maintenance) {
+                monitor.heartbeat(now);
+                axis.observe(monitor.observer(false));
+                maintenance = now + milliseconds(50);
+            }
             if (stop_requested.load()) {
                 if (child) std::cout << "Daemon: mapping stopped; game process continues.\n" << std::flush;
                 break;
             }
-            if (child && child->exited()) {
-                std::cout << "Daemon: game process exited; stopping mapping.\n" << std::flush;
-                break;
+            if (child && now >= game_check) {
+                game_check = now + milliseconds(4);
+                if (child->exited()) {
+                    std::cout << "Daemon: game process exited; stopping mapping.\n" << std::flush;
+                    break;
+                }
             }
-            if (enabled) axis.tick(clock_type::now(), output_keyboard, send_key);
-            unsigned int wait_ms = 4;
+            if (enabled) axis.tick(now, output_keyboard, send_key);
+            DWORD wait_ms = 4;
             if (enabled) if (const auto due = axis.deadline()) {
-                const auto remaining = std::chrono::duration_cast<milliseconds>(*due - clock_type::now()).count();
-                wait_ms = static_cast<unsigned int>(std::clamp<std::int64_t>(remaining, 1, 4));
+                wait_ms = wait_milliseconds(*due, clock_type::now(), 4);
             }
+            if (child) wait_ms = std::min(wait_ms, wait_milliseconds(game_check, clock_type::now(), 4));
             const auto device = session.api.wait_with_timeout(session.context, wait_ms);
             if (device == 0) continue;
-            alignas(InterceptionMouseStroke) std::array<char, sizeof(InterceptionMouseStroke) * 32> buffer{};
             const auto count = session.api.receive(session.context, device, reinterpret_cast<InterceptionStroke*>(buffer.data()), 32);
             if (count <= 0 || count > 32) throw std::runtime_error("Driver input receive failed");
             for (int index = 0; index < count; ++index) {
+                now = clock_type::now();
                 if (is_keyboard(device)) {
                     InterceptionKeyStroke stroke{};
                     std::memcpy(&stroke, buffer.data() + index * sizeof(stroke), sizeof(stroke));
@@ -252,6 +271,7 @@ void run(const configuration& config, const game_command* game) {
                             }
                             axis.release(output_keyboard, send_key);
                             enabled = !enabled;
+                            monitor.enabled(enabled);
                             if (enabled) output_keyboard = device;
                             // Play asynchronously so feedback never waits for the sound to finish.
                             PlaySoundW(enabled ? L"DeviceConnect" : L"DeviceDisconnect", nullptr,
@@ -264,8 +284,10 @@ void run(const configuration& config, const game_command* game) {
                 } else {
                     InterceptionMouseStroke stroke{};
                     std::memcpy(&stroke, buffer.data() + index * sizeof(stroke), sizeof(stroke));
+                    if (monitor.recording())
+                        monitor.motion(stroke.x, stroke.y, (stroke.flags & INTERCEPTION_MOUSE_MOVE_ABSOLUTE) != 0);
                     if (enabled && !(stroke.flags & INTERCEPTION_MOUSE_MOVE_ABSOLUTE)) {
-                        axis.update(stroke.x, clock_type::now(), output_keyboard, send_key);
+                        axis.update(stroke.x, now, output_keyboard, send_key);
                         stroke.x = 0;
                     } else if (enabled && !absolute_warning && (stroke.flags & INTERCEPTION_MOUSE_MOVE_ABSOLUTE)) {
                         absolute_warning = true;

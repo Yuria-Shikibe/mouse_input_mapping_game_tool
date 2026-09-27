@@ -1,7 +1,6 @@
 #pragma once
 #include "mapping.hpp"
 #include <exception>
-#include <map>
 
 namespace mouse_mapping {
 class button_mapping {
@@ -10,6 +9,7 @@ public:
 
     template<class Sink>
     void update(std::uintptr_t device, unsigned short flags, Sink&& send) {
+        if (!(flags & 0x03ff)) return;
         // Raw Input button bits are DOWN/UP pairs: left, right, middle, X1, X2.
         for (std::size_t index = 0; index < codes_.size(); ++index) {
             if (flags & (1u << (index * 2))) {
@@ -65,6 +65,6 @@ private:
     }
     std::array<key_code, 5> codes_;
     std::array<bool, 5> physical_{}, output_{};
-    std::map<std::uintptr_t, std::array<bool, 5>> mice_;
+    device_table<std::array<bool, 5>> mice_;
 };
 } // namespace mouse_mapping

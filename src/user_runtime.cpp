@@ -1,5 +1,7 @@
 #include "runtime.hpp"
 #include "xy_mapping.hpp"
+#include "input_monitor.hpp"
+#include "input_schedule.hpp"
 #include <windows.h>
 #include <mmsystem.h>
 #include <atomic>
@@ -12,6 +14,12 @@ namespace mouse_mapping {
 namespace {
 std::atomic<bool> stopping = false;
 std::atomic<HANDLE> shutdown_done = nullptr;
+std::atomic<HANDLE> stop_event = nullptr;
+
+void request_stop() noexcept {
+    stopping = true;
+    if (const auto event_handle = stop_event.load()) SetEvent(event_handle);
+}
 
 [[noreturn]] void fail(const char* message) {
     throw std::system_error(static_cast<int>(GetLastError()), std::system_category(), message);
@@ -30,7 +38,7 @@ void send_key(key_event event) {
 BOOL WINAPI console_handler(DWORD event) {
     if (event != CTRL_C_EVENT && event != CTRL_BREAK_EVENT && event != CTRL_CLOSE_EVENT
         && event != CTRL_LOGOFF_EVENT && event != CTRL_SHUTDOWN_EVENT) return FALSE;
-    stopping = true;
+    request_stop();
     if (event != CTRL_C_EVENT && event != CTRL_BREAK_EVENT)
         if (const auto done = shutdown_done.load()) WaitForSingleObject(done, 2000);
     return TRUE;
@@ -47,6 +55,7 @@ public:
     ~session() {
         try { if (mapping) mapping->release(send_key); }
         catch (const std::exception& error) { std::cerr << "Key cleanup failed: " << error.what() << '\n'; }
+        monitor.stop();
         if (hook) UnhookWindowsHookEx(hook);
         if (window) {
             RAWINPUTDEVICE device{1, 2, RIDEV_REMOVE, nullptr};
@@ -57,6 +66,7 @@ public:
         if (done) SetEvent(done);
         if (handler_registered) SetConsoleCtrlHandler(console_handler, FALSE);
         shutdown_done = nullptr;
+        stop_event = nullptr;
         // Keep the event valid until process teardown: a console callback may be waiting on it.
         if (console_changed) SetConsoleMode(console, console_mode);
         if (timer_started) timeEndPeriod(1);
@@ -68,11 +78,15 @@ public:
         mutex = CreateMutexW(nullptr, FALSE, L"Local\\mouse_input_mapping_v1");
         if (!mutex) fail("Cannot create instance mutex");
         if (GetLastError() == ERROR_ALREADY_EXISTS) throw std::runtime_error("Another mapping target is already running");
+        monitor.start(config, true);
         active = this;
         stopping = false;
         done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         if (!done) fail("Cannot create shutdown event");
         shutdown_done = done;
+        wake = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!wake) fail("Cannot create input stop event");
+        stop_event = wake;
         if (!SetConsoleCtrlHandler(console_handler, TRUE)) fail("Cannot register console handler");
         handler_registered = true;
         console = GetStdHandle(STD_INPUT_HANDLE);
@@ -116,16 +130,20 @@ public:
                     return;
                 }
             mapping = std::make_unique<xy_mapping>(config);
+            mapping->observe(monitor.observer(false), monitor.observer(true));
         }
+        monitor.enabled(mapping != nullptr);
         PlaySoundW(mapping ? L"DeviceConnect" : L"DeviceDisconnect", nullptr,
             SND_ALIAS | SND_ASYNC | SND_NODEFAULT | SND_SYSTEM);
         std::cout << (mapping ? "ON\n" : "OFF\n") << std::flush;
     }
     configuration config;
+    monitor_publisher monitor;
     std::unique_ptr<xy_mapping> mapping;
     toggle_latch latch;
     std::exception_ptr failure;
     bool absolute_warning = false;
+    HANDLE wake{}; // Kept valid through process teardown for console callbacks.
 private:
     HANDLE mutex{}, done{}, console{};
     DWORD console_mode{};
@@ -149,7 +167,7 @@ LRESULT CALLBACK keyboard_proc(int code, WPARAM wparam, LPARAM lparam) {
                 if (active->mapping && active->mapping->physical({1, key, down}, send_key)) return 1;
             } catch (...) {
                 active->failure = std::current_exception();
-                stopping = true;
+                request_stop();
             }
         }
     }
@@ -159,7 +177,7 @@ LRESULT CALLBACK keyboard_proc(int code, WPARAM wparam, LPARAM lparam) {
 LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     if (message == WM_INPUT_DEVICE_CHANGE && wparam == GIDC_REMOVAL && active && active->mapping) {
         try { active->mapping->remove_mouse(static_cast<std::uintptr_t>(lparam), send_key); }
-        catch (...) { active->failure = std::current_exception(); stopping = true; }
+        catch (...) { active->failure = std::current_exception(); request_stop(); }
     }
     if (message == WM_INPUT && active && !stopping.load()) {
         try {
@@ -167,14 +185,18 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             UINT bytes = sizeof(input);
             if (GetRawInputData(reinterpret_cast<HRAWINPUT>(lparam), RID_INPUT, &input, &bytes, sizeof(RAWINPUTHEADER)) == UINT(-1))
                 fail("Cannot read mouse Raw Input");
-            if (input.header.dwType == RIM_TYPEMOUSE && active->mapping) {
+            if (input.header.dwType == RIM_TYPEMOUSE) {
                 const auto& mouse = input.data.mouse;
+                if (active->monitor.recording())
+                    active->monitor.motion(mouse.lLastX, mouse.lLastY, (mouse.usFlags & MOUSE_MOVE_ABSOLUTE) != 0);
+                if (!active->mapping) return DefWindowProcW(window, message, wparam, lparam);
+                const auto now = clock_type::now();
                 active->mapping->buttons(reinterpret_cast<std::uintptr_t>(input.header.hDevice), mouse.usButtonFlags, send_key);
                 if (mouse.usButtonFlags & RI_MOUSE_WHEEL)
                     active->mapping->wheel(reinterpret_cast<std::uintptr_t>(input.header.hDevice),
-                        static_cast<std::int16_t>(mouse.usButtonData), clock_type::now(), send_key);
+                        static_cast<std::int16_t>(mouse.usButtonData), now, send_key);
                 if (!(mouse.usFlags & MOUSE_MOVE_ABSOLUTE))
-                    active->mapping->update(mouse.lLastX, mouse.lLastY, clock_type::now(), send_key);
+                    active->mapping->update(mouse.lLastX, mouse.lLastY, now, send_key);
                 else if (!active->absolute_warning) {
                     active->absolute_warning = true;
                     std::cout << "Absolute coordinates ignored; mouse buttons still map.\n";
@@ -182,41 +204,46 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             }
         } catch (...) {
             active->failure = std::current_exception();
-            stopping = true;
+            request_stop();
         }
     }
     return DefWindowProcW(window, message, wparam, lparam);
 }
 } // namespace
 
-void run(const configuration& config, const game_command* game) {
+void run(const configuration& config, const game_command* game, input_priority priority) {
     validate(config);
     session state(config);
     state.start();
+    input_thread_priority thread_priority(priority);
+    input_waiter waiter;
     std::unique_ptr<game_process> child;
     if (game) child = std::make_unique<game_process>(*game);
+    auto maintenance = clock_type::now();
     while (!stopping.load()) {
-        DWORD wait_ms = 4;
-        if (state.mapping) if (const auto due = state.mapping->deadline()) {
-            const auto remaining = std::chrono::duration_cast<milliseconds>(*due - clock_type::now()).count();
-            wait_ms = static_cast<DWORD>(std::clamp<std::int64_t>(remaining, 1, 4));
+        const auto now = clock_type::now();
+        if (now >= maintenance) {
+            state.monitor.heartbeat(now);
+            if (state.mapping) state.mapping->observe(state.monitor.observer(false), state.monitor.observer(true));
+            maintenance = now + milliseconds(50);
         }
+        if (state.mapping) state.mapping->tick(now, send_key);
+        auto wake_at = maintenance;
+        if (state.mapping) if (const auto due = state.mapping->deadline()) wake_at = std::min(wake_at, *due);
         const HANDLE game_handle = child ? child->handle() : nullptr;
-        const DWORD wait_result = MsgWaitForMultipleObjectsEx(child ? 1 : 0, child ? &game_handle : nullptr,
-            wait_ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-        if (wait_result == WAIT_FAILED)
-            fail("Cannot wait for input");
-        if (child && wait_result == WAIT_OBJECT_0) {
+        if (waiter.wait(state.wake, game_handle, wake_at)) {
             std::cout << "Daemon: game process exited; stopping mapping.\n" << std::flush;
             break;
         }
         MSG message{};
-        for (int count = 0; count < 256 && !stopping.load() && PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE); ++count) {
-            if (message.message == WM_QUIT) { stopping = true; break; }
-            TranslateMessage(&message);
+        const auto batch_end = clock_type::now() + std::chrono::microseconds(500);
+        for (int count = 0; count < 32 && !stopping.load() && PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE); ++count) {
+            if (message.message == WM_QUIT) { request_stop(); break; }
             DispatchMessageW(&message);
+            const auto processed = clock_type::now();
+            if (state.mapping && !stopping.load()) state.mapping->tick(processed, send_key);
+            if (processed >= batch_end) break;
         }
-        if (state.mapping && !stopping.load()) state.mapping->tick(clock_type::now(), send_key);
     }
     if (child && !child->exited())
         std::cout << "Daemon: mapping stopped; game process continues.\n" << std::flush;
