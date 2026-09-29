@@ -5,9 +5,9 @@
 
 namespace mouse_mapping {
 namespace {
-constexpr wchar_t mapping_name[] = L"Local\\mouse_input_mapping_monitor_v2";
-constexpr wchar_t control_name[] = L"Local\\mouse_input_mapping_monitor_control_v2";
-constexpr std::uint64_t protocol = 2;
+constexpr wchar_t mapping_name[] = L"Local\\mouse_input_mapping_monitor_v3";
+constexpr wchar_t control_name[] = L"Local\\mouse_input_mapping_monitor_control_v3";
+constexpr std::uint64_t protocol = 3;
 using word = std::atomic<std::uint64_t>;
 static_assert(word::is_always_lock_free);
 struct monitor_slot {
@@ -62,6 +62,7 @@ monitor_publisher::~monitor_publisher() {
 }
 void monitor_publisher::start(const configuration& config, bool user_mode) noexcept {
     user_mode_ = user_mode;
+    y_enabled_ = y_enabled(config);
     keys_ = static_cast<std::uint64_t>(config.left_key)
         | (static_cast<std::uint64_t>(config.right_key) << 16)
         | (static_cast<std::uint64_t>(config.up_key) << 32)
@@ -83,11 +84,11 @@ void monitor_publisher::begin_recording() noexcept {
     shared_->published.store(0);
     shared_->version.store(protocol);
     shared_->pid.store(GetCurrentProcessId());
-    shared_->user.store(user_mode_ ? 1 : 0);
+    shared_->user.store((user_mode_ ? 1u : 0u) | (y_enabled_ ? 2u : 0u));
     shared_->hz.store(frequency());
     shared_->keys.store(keys_);
     sequence_ = 0;
-    state_ &= 16u; // Direction observers supply a fresh snapshot on attachment.
+    state_ &= (16u | 64u); // Direction observers supply a fresh snapshot on attachment.
     shared_->session.store(ticks());
     publish(monitor_event_kind::snapshot);
 }
@@ -117,6 +118,10 @@ void monitor_publisher::motion(std::int32_t x, std::int32_t y, bool absolute) no
 }
 void monitor_publisher::enabled(bool value) noexcept {
     state_ = (state_ & ~16u) | (value ? 16u : 0u);
+    publish(monitor_event_kind::snapshot);
+}
+void monitor_publisher::bypassed(bool value) noexcept {
+    state_ = (state_ & ~64u) | (value ? 64u : 0u);
     publish(monitor_event_kind::snapshot);
 }
 void monitor_publisher::heartbeat(time_point now) noexcept {
@@ -205,7 +210,9 @@ void monitor_reader::poll(std::vector<monitor_event>& events, bool& new_session,
         info_.session = session;
         info_.started = static_cast<double>(session) / static_cast<double>(hz);
         info_.pid = static_cast<unsigned>(shared_->pid.load());
-        info_.user_mode = shared_->user.load() != 0;
+        const auto flags = shared_->user.load();
+        info_.user_mode = (flags & 1) != 0;
+        info_.y_enabled = (flags & 2) != 0;
         const auto keys = shared_->keys.load();
         for (unsigned i = 0; i < 4; ++i) info_.keys[i] = static_cast<key_code>(keys >> (i * 16));
         cursor_ = 0; last_time_ = 0; stopped_ = false;

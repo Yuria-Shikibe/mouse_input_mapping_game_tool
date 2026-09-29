@@ -1,5 +1,6 @@
 #include "input_preview.hpp"
 #include "xy_mapping.hpp"
+#include "bypass.hpp"
 #include <mmsystem.h>
 #include <stdexcept>
 #include <system_error>
@@ -16,8 +17,8 @@ struct input_window {
     bool registered = false, timer = false;
     ~input_window() {
         if (registered) {
-            RAWINPUTDEVICE device{1, 2, RIDEV_REMOVE, nullptr};
-            RegisterRawInputDevices(&device, 1, sizeof(device));
+            RAWINPUTDEVICE devices[]{{1, 2, RIDEV_REMOVE, nullptr}, {1, 6, RIDEV_REMOVE, nullptr}};
+            RegisterRawInputDevices(devices, 2, sizeof(RAWINPUTDEVICE));
         }
         if (window) DestroyWindow(window);
         if (timer) timeEndPeriod(1);
@@ -80,16 +81,32 @@ void input_preview::run(std::stop_token stop, configuration config, HWND owner) 
         if (!RegisterClassW(&type) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) preview_error("Register preview window");
         input.window = CreateWindowExW(0, preview_class, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, type.hInstance, nullptr);
         if (!input.window) preview_error("Create preview input window");
-        RAWINPUTDEVICE device{1, 2, RIDEV_INPUTSINK | RIDEV_DEVNOTIFY, input.window};
-        if (!RegisterRawInputDevices(&device, 1, sizeof(device))) preview_error("Register preview mouse");
+        RAWINPUTDEVICE devices[]{{1, 2, RIDEV_INPUTSINK | RIDEV_DEVNOTIFY, input.window},
+            {1, 6, RIDEV_INPUTSINK | RIDEV_DEVNOTIFY, input.window}};
+        if (!RegisterRawInputDevices(devices, 2, sizeof(RAWINPUTDEVICE))) preview_error("Register preview input");
         input.registered = true;
         input.timer = timeBeginPeriod(1) == TIMERR_NOERROR;
         xy_mapping mapping(config);
         mapping.observe(observer(false), observer(true));
+        bypass_state bypass(config);
+        bypass.seed();
+        bool bypassed = false;
+        const auto sync_bypass = [&](bool packet = false) {
+            const bool next = bypass.held() || packet;
+            if (next && !bypassed) mapping.release(discard_key);
+            if (next != bypassed) {
+                state_ = (state_ & ~64u) | (next ? 64u : 0u);
+                record(monitor_event_kind::snapshot);
+            }
+            bypassed = next;
+        };
+        sync_bypass();
         running_ = true;
         bool focused = false;
         double last_snapshot = 0;
         while (!stop.stop_requested() && !recording_failed_) {
+            bypass.refresh_initial();
+            sync_bypass();
             const bool foreground = GetForegroundWindow() == owner && !IsIconic(owner);
             if (foreground != focused) {
                 mapping.release(discard_key);
@@ -98,7 +115,7 @@ void input_preview::run(std::stop_token stop, configuration config, HWND owner) 
                 record(monitor_event_kind::snapshot);
             }
             DWORD wait_ms = 4;
-            if (focused) if (const auto due = mapping.deadline()) {
+            if (focused && !bypassed) if (const auto due = mapping.deadline()) {
                 const auto remaining = std::chrono::duration_cast<milliseconds>(*due - clock_type::now()).count();
                 wait_ms = static_cast<DWORD>(std::clamp<std::int64_t>(remaining, 1, 4));
             }
@@ -111,22 +128,41 @@ void input_preview::run(std::stop_token stop, configuration config, HWND owner) 
                     UINT bytes = sizeof(raw);
                     if (GetRawInputData(reinterpret_cast<HRAWINPUT>(message.lParam), RID_INPUT, &raw, &bytes, sizeof(RAWINPUTHEADER)) == UINT(-1))
                         preview_error("Read preview mouse");
-                    if (focused && GetForegroundWindow() == owner && raw.header.dwType == RIM_TYPEMOUSE) {
+                    if (raw.header.dwType == RIM_TYPEKEYBOARD) {
+                        const auto& key = raw.data.keyboard;
+                        if (!(key.Flags & RI_KEY_E1)) {
+                            bypass.keyboard(reinterpret_cast<std::uintptr_t>(raw.header.hDevice),
+                                static_cast<key_code>(key.MakeCode | ((key.Flags & RI_KEY_E0) ? 0xe000 : 0)),
+                                !(key.Flags & RI_KEY_BREAK));
+                            sync_bypass();
+                        }
+                    }
+                    if (raw.header.dwType == RIM_TYPEMOUSE) {
                         const auto& mouse = raw.data.mouse;
+                        const bool was_bypassed = bypass.held();
+                        const bool down = bypass.mouse(reinterpret_cast<std::uintptr_t>(raw.header.hDevice), mouse.usButtonFlags);
+                        const bool packet = was_bypassed || down || bypass.held();
+                        sync_bypass(packet);
+                        if (focused && GetForegroundWindow() == owner) {
                         if (mouse.usFlags & MOUSE_MOVE_ABSOLUTE) {
                             if (!(state_ & 32)) { state_ |= 32; record(monitor_event_kind::absolute); }
                         } else {
                             if (mouse.lLastX || mouse.lLastY) record(monitor_event_kind::motion, mouse.lLastX, mouse.lLastY);
-                            mapping.update(mouse.lLastX, mouse.lLastY, clock_type::now(), discard_key);
+                            if (!packet) mapping.update(mouse.lLastX, mouse.lLastY, clock_type::now(), discard_key);
                         }
+                        }
+                        sync_bypass();
                     }
                 } else if (message.message == WM_INPUT_DEVICE_CHANGE && message.wParam == GIDC_REMOVAL) {
                     mapping.remove_mouse(static_cast<std::uintptr_t>(message.lParam), discard_key);
+                    bypass.remove_mouse(static_cast<std::uintptr_t>(message.lParam));
+                    bypass.remove_keyboard(static_cast<std::uintptr_t>(message.lParam));
+                    sync_bypass();
                 }
                 DispatchMessageW(&message); // Includes required WM_INPUT cleanup.
-                if (focused) mapping.tick(clock_type::now(), discard_key);
+                if (focused && !bypassed) mapping.tick(clock_type::now(), discard_key);
             }
-            if (focused) mapping.tick(clock_type::now(), discard_key);
+            if (focused && !bypassed) mapping.tick(clock_type::now(), discard_key);
             const auto now = monitor_now();
             if (now - last_snapshot >= 0.033) { record(monitor_event_kind::snapshot); last_snapshot = now; }
         }

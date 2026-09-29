@@ -15,13 +15,14 @@ struct monitor_event {
     double time = 0;
     std::int32_t x = 0, y = 0;
     monitor_event_kind kind = monitor_event_kind::snapshot;
-    unsigned state = 0; // X intent bits 0..1, Y 2..3, ON 4, absolute seen 5.
+    unsigned state = 0; // X intent bits 0..1, Y 2..3, ON 4, absolute seen 5, bypass 6.
 };
 struct monitor_info {
     std::uint64_t session = 0;
     double started = 0;
     unsigned pid = 0;
     bool user_mode = false;
+    bool y_enabled = false;
     std::array<key_code, 4> keys{};
 };
 struct monitor_shared;
@@ -38,6 +39,7 @@ public:
     void start(const configuration& config, bool user_mode) noexcept;
     void motion(std::int32_t x, std::int32_t y, bool absolute) noexcept;
     void enabled(bool value) noexcept;
+    void bypassed(bool value) noexcept;
     void heartbeat(time_point now) noexcept;
     bool recording() const noexcept { return shared_ != nullptr && !stopped_; }
     void stop() noexcept;
@@ -57,6 +59,7 @@ private:
     monitor_control* control_ = nullptr;
     std::uint64_t keys_ = 0;
     bool user_mode_ = false;
+    bool y_enabled_ = false;
     time_point next_maintenance_{};
     bool stopped_ = false;
 };

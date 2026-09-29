@@ -27,6 +27,7 @@ int wmain(int argc, wchar_t** argv) {
                     "X pulse defaults OFF; Y pulse defaults ON with 0.45 hold ratio.\n"
                     "Raw Input reads movement/buttons; SendInput sends keys. Disable mouse input in the game.\n"
                     "Original mouse input is NOT blocked. Absolute coordinates are ignored; buttons still map.\n"
+                    "Hold either optional bypass key to suspend movement, button and wheel mappings.\n"
                     "Toggle is global; Ctrl+C exits. Release all mapping keys and mouse buttons before enabling.\n"
                     "No Interception DLL, driver installation, or administrator access is required.\n"
                     "SendInput can be rejected by a game or by Windows integrity-level restrictions.\n";
@@ -73,6 +74,7 @@ int wmain(int argc, wchar_t** argv) {
             std::cout << mouse_key_fields[index] << '=' << describe_key(config.mouse_keys[index]) << '\n';
         for (std::size_t index = 0; index < wheel_key_fields.size(); ++index)
             std::cout << wheel_key_fields[index] << '=' << describe_key(config.wheel_keys[index]) << '\n';
+        std::println("Bypass={} / {}", format_input_binding(config.bypass_keys[0]), format_input_binding(config.bypass_keys[1]));
         run(config, daemon ? &game : nullptr, priority);
         return 0;
     } catch (const std::exception& error) {

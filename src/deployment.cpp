@@ -10,6 +10,7 @@
 #include <iostream>
 #include <system_error>
 #include <vector>
+#include <fstream>
 
 namespace mouse_mapping {
 namespace {
@@ -167,28 +168,107 @@ unsigned long install_driver() {
     return ERROR_SUCCESS_REBOOT_REQUIRED;
 }
 
-bool ensure_driver() {
-    if (driver_available()) return true;
-    if (driver_registered()) {
-        std::cout << "Driver is installed but not active. Restart Windows, then run this program again.\n"
-                     "If you already restarted, use --check: Windows may have blocked the driver.\n";
-        return false;
+std::wstring startup_error_text(const char* message) {
+    const auto size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, message, -1, nullptr, 0);
+    const auto page = size ? CP_UTF8 : CP_ACP;
+    const auto count = MultiByteToWideChar(page, 0, message, -1, nullptr, 0);
+    if (!count) return L"无法读取详细错误。";
+    std::wstring result(count, L'\0');
+    MultiByteToWideChar(page, 0, message, -1, result.data(), count);
+    result.pop_back();
+    return result;
+}
+
+void report_startup(const std::wstring& message, bool interactive) {
+    auto display = message;
+    try {
+        std::array<wchar_t, 32768> root{};
+        const auto count = GetEnvironmentVariableW(L"LOCALAPPDATA", root.data(), static_cast<DWORD>(root.size()));
+        const auto directory = count && count < root.size()
+            ? std::filesystem::path(root.data()) / L"MouseInputMapping"
+            : std::filesystem::temp_directory_path() / L"MouseInputMapping";
+        std::filesystem::create_directories(directory);
+        const auto log = directory / L"kernel-startup.log";
+        const auto bytes = WideCharToMultiByte(CP_UTF8, 0, message.data(), static_cast<int>(message.size()), nullptr, 0, nullptr, nullptr);
+        std::string encoded(bytes, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, message.data(), static_cast<int>(message.size()), encoded.data(), bytes, nullptr, nullptr);
+        std::ofstream output(log, std::ios::app | std::ios::binary);
+        SYSTEMTIME time{};
+        GetLocalTime(&time);
+        output << std::format("\n[{:04}-{:02}-{:02} {:02}:{:02}:{:02}]\n", time.wYear, time.wMonth, time.wDay,
+            time.wHour, time.wMinute, time.wSecond) << encoded << '\n';
+        output.flush();
+        if (!output) throw std::runtime_error("log write failed");
+        display += L"\n\n诊断日志：" + log.wstring();
+    } catch (...) {
+        display += L"\n\n诊断日志写入失败，请保留此提示中的错误信息。";
     }
-    std::cout << "First-run setup: installing the bundled input driver.\n"
-                 "Windows will request administrator permission. One restart is required.\n"
-                 "Your key configuration is saved; no separate download or install command is needed.\n" << std::flush;
+    // WriteConsole preserves Chinese in a console; redirected output is UTF-8.
+    DWORD mode = 0, written = 0;
+    const auto output = GetStdHandle(STD_ERROR_HANDLE);
+    display += L"\n";
+    if (GetConsoleMode(output, &mode))
+        WriteConsoleW(output, display.data(), static_cast<DWORD>(display.size()), &written, nullptr);
+    else {
+        const auto bytes = WideCharToMultiByte(CP_UTF8, 0, display.data(), static_cast<int>(display.size()), nullptr, 0, nullptr, nullptr);
+        std::string encoded(bytes, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, display.data(), static_cast<int>(display.size()), encoded.data(), bytes, nullptr, nullptr);
+        std::cerr << encoded << std::flush;
+    }
+    if (interactive) MessageBoxW(GetConsoleWindow(), display.c_str(), L"鼠标映射 · 内核启动诊断", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+}
+
+std::wstring driver_diagnosis(unsigned long* device_error) {
+    if (device_error) *device_error = ERROR_SUCCESS;
+    // Probe without installing filters. The upstream DLL loses GetLastError while
+    // cleaning up a failed context, so obtain the device error independently.
+    for (int index = 0; index < 20; ++index) {
+        const auto name = std::format(L"\\\\.\\interception{:02}", index);
+        handle_owner device(CreateFileW(name.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr));
+        if (device.get() != INVALID_HANDLE_VALUE) continue;
+        const auto error = GetLastError();
+        if (device_error) *device_error = error;
+        auto detail = std::format(L"设备 {} 打开失败（Windows 错误 {}）。\n", name, error);
+        if (error == ERROR_SHARING_VIOLATION || error == ERROR_ACCESS_DENIED)
+            return detail + L"设备可能被其他映射工具占用，或访问受到限制。请先关闭其他实例及使用 Interception 的软件，再重试；必要时以管理员身份运行。此情况不应反复安装驱动。";
+        if (!driver_registered())
+            return detail + L"Interception 驱动未安装或注册不完整。可使用自动修复重新安装内置驱动。";
+        std::array<wchar_t, MAX_PATH> system{};
+        if (!GetSystemDirectoryW(system.data(), static_cast<UINT>(system.size()))) fail_windows("Cannot locate system drivers");
+        if (!std::filesystem::exists(std::filesystem::path(system.data()) / L"drivers/keyboard.sys")
+            || !std::filesystem::exists(std::filesystem::path(system.data()) / L"drivers/mouse.sys"))
+            return detail + L"驱动注册记录存在，但驱动文件缺失。可使用自动修复恢复内置驱动。";
+        return detail + L"驱动注册记录和文件存在，但设备尚不可用。若刚安装，请先重启 Windows（不是关闭后再开机）。若重启后仍失败，可尝试自动修复，并检查事件查看器中的 CodeIntegrity 日志。安全策略阻止加载时，重装未必有效；可改用同目录的 mouse_input_mapping_user.exe。";
+    }
+    return L"驱动设备可以打开，但驱动会话初始化失败。请关闭其他映射工具后重试；仍失败时可尝试自动修复。";
+}
+
+unsigned long ensure_driver(bool interactive) {
+    if (driver_available()) return ERROR_SUCCESS;
+    unsigned long device_error = 0;
+    const auto diagnosis = driver_diagnosis(&device_error);
+    if (device_error == ERROR_SHARING_VIOLATION || device_error == ERROR_ACCESS_DENIED) {
+        report_startup(L"内核映射尚未启动。\n\n" + diagnosis, interactive);
+        return device_error;
+    }
+    report_startup(L"内核映射尚未启动。\n\n" + diagnosis, false);
+    if (!interactive) {
+        report_startup(L"请运行 mouse_input_mapping_kernel.exe --install-driver 修复，完成后重启 Windows。", false);
+        return ERROR_NOT_READY;
+    }
+    const auto prompt = diagnosis + L"\n\n是否现在自动修复？\n将请求管理员权限并运行内置驱动安装器，保留键位配置。完成后需要手动重启 Windows；程序不会自动重启或更改系统安全设置。\n\n选择“否”退出，可在准备好后重新运行。";
+    if (MessageBoxW(GetConsoleWindow(), prompt.c_str(), L"内核映射不可用 · 自动修复",
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND) != IDYES)
+        return ERROR_NOT_READY;
     const auto result = install_driver();
     if (result == ERROR_CANCELLED) {
-        std::cout << "Setup canceled. Run this program again when ready to allow driver installation.\n";
-        return false;
+        report_startup(L"已取消管理员授权，驱动未修复，内核映射未启动。重新运行程序即可再次修复。", true);
+        return result;
     }
     if (result != ERROR_SUCCESS && result != ERROR_SUCCESS_REBOOT_REQUIRED)
-        throw std::runtime_error(std::format(
-            "Driver installation failed (exit {}). Run --install-driver from an Administrator terminal to retry. "
-            "Windows has not been restarted.", result));
-    std::cout << "Setup completed. Restart Windows once, then run this EXE again.\n"
-                 "Configuration was preserved. This program will not restart Windows automatically.\n";
-    return false;
+        throw std::runtime_error(std::format("Driver installation failed (exit {}). Retry --install-driver from an administrator terminal.", result));
+    report_startup(L"驱动修复已完成，键位配置已保留。\n请保存其他工作并手动重启 Windows，然后重新运行本程序。\n当前内核映射尚未启动。", true);
+    return ERROR_SUCCESS_REBOOT_REQUIRED;
 }
 
 } // namespace mouse_mapping

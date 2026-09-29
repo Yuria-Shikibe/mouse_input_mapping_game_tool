@@ -127,6 +127,42 @@ configuration configure(configuration defaults, bool text_mode) {
             catch (const std::exception& error) { std::cout << error.what() << '\n'; }
         }
     };
+    for (std::size_t i = 0; i < defaults.bypass_keys.size(); ++i) {
+        for (;;) {
+            std::cout << "Bypass key " << i + 1 << " (key name / MOUSE_LEFT/RIGHT/MIDDLE/X1/X2 / NONE; Enter keeps "
+                << format_input_binding(defaults.bypass_keys[i]) << "): " << std::flush;
+            const auto answer = trim(read_setting());
+            if (answer.empty()) break;
+            try {
+                const auto binding = parse_input_binding(answer);
+                if ((binding.kind == input_kind::keyboard && binding.code == defaults.toggle_key)
+                    || (binding.kind != input_kind::none && binding == defaults.bypass_keys[1 - i]))
+                    throw std::runtime_error("Bypass keys must differ from each other and toggle key");
+                defaults.bypass_keys[i] = binding;
+                break;
+            } catch (const std::exception& error) { std::cout << error.what() << '\n'; }
+        }
+    }
+    if (!defaults.map_y) {
+        defaults.kernel_y_enabled = ask_switch("Kernel Y mapping enabled", defaults.kernel_y_enabled);
+        defaults.kernel_y_block = ask_switch("Kernel Y original input blocked", defaults.kernel_y_block);
+        if (defaults.kernel_y_enabled) {
+            for (;;) {
+                defaults.kernel_y.up_key = ask("Kernel Y- key", defaults.kernel_y.up_key);
+                defaults.kernel_y.down_key = ask("Kernel Y+ key", defaults.kernel_y.down_key);
+                try { validate(defaults); break; }
+                catch (const std::exception& error) { std::cout << error.what() << '\n'; }
+            }
+            defaults.kernel_y.pulse_enabled = ask_switch("Kernel Y pulse enabled", defaults.kernel_y.pulse_enabled);
+            defaults.kernel_y.hold_ratio = ask_ratio("Kernel Y hold ratio", defaults.kernel_y.hold_ratio);
+        }
+    }
+    defaults.chord.enabled = ask_switch("One key to two keys enabled", defaults.chord.enabled);
+    if (defaults.chord.enabled) {
+        defaults.chord.trigger = ask("Chord trigger (original input preserved)", defaults.chord.trigger);
+        defaults.chord.first = ask("Chord first output", defaults.chord.first);
+        defaults.chord.second = ask("Chord second output", defaults.chord.second);
+    }
     defaults.x_pulse_enabled = ask_switch("X pulse enabled", defaults.x_pulse_enabled);
     defaults.x_keyboard_override_enabled = ask_switch(
         "X keyboard override enabled", defaults.x_keyboard_override_enabled);
@@ -137,11 +173,11 @@ configuration configure(configuration defaults, bool text_mode) {
     }
     auto ask_axis = [&](bool y) {
         const auto axis = y ? "Y" : "X";
-        auto& smoothing = y ? defaults.y_smoothing_factor : defaults.x_smoothing_factor;
+        auto& smoothing = y ? (defaults.map_y ? defaults.y_smoothing_factor : defaults.kernel_y.smoothing_factor) : defaults.x_smoothing_factor;
         const auto smoothing_label = std::format("{} smoothing factor (1=raw, 0=no axis mapping)", axis);
         smoothing = ask_ratio(smoothing_label.c_str(), smoothing);
-        auto& start = y ? defaults.y_start_counts : defaults.x_start_counts;
-        auto& reverse = y ? defaults.y_reverse_counts : defaults.x_reverse_counts;
+        auto& start = y ? (defaults.map_y ? defaults.y_start_counts : defaults.kernel_y.start_counts) : defaults.x_start_counts;
+        auto& reverse = y ? (defaults.map_y ? defaults.y_reverse_counts : defaults.kernel_y.reverse_counts) : defaults.x_reverse_counts;
         auto ask_count = [&](const char* label, int current, int minimum) {
             for (;;) {
                 std::cout << axis << " " << label << " (" << minimum << "..10000, Enter keeps " << current << "): " << std::flush;
@@ -155,8 +191,8 @@ configuration configure(configuration defaults, bool text_mode) {
         };
         start = ask_count("start counts", start, 1);
         reverse = ask_count("reverse counts", reverse, start);
-        if (!(y ? defaults.y_pulse_enabled : defaults.x_pulse_enabled)) return;
-        auto& curve = y ? defaults.y_curve : defaults.x_curve;
+        if (!(y ? (defaults.map_y ? defaults.y_pulse_enabled : defaults.kernel_y.pulse_enabled) : defaults.x_pulse_enabled)) return;
+        auto& curve = y ? (defaults.map_y ? defaults.y_curve : defaults.kernel_y.curve) : defaults.x_curve;
         const auto curve_switch_label = std::format("{} sensitivity curve enabled", axis);
         curve.enabled = ask_switch(curve_switch_label.c_str(), curve.enabled);
         if (!curve.enabled) return;
@@ -179,7 +215,8 @@ configuration configure(configuration defaults, bool text_mode) {
         }
     };
     ask_axis(false);
-    if (defaults.map_y) ask_axis(true);
+    if (y_enabled(defaults)) ask_axis(true);
+    validate(defaults);
     return defaults;
 }
 

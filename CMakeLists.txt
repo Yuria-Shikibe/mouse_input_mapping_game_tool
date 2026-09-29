@@ -21,17 +21,17 @@ if(MSVC)
 endif()
 
 # Shared sources are compiled directly into the three shipped executables.
-set(runtime_sources src/config.cpp src/console_config.cpp src/game_process.cpp src/input_monitor.cpp)
+set(runtime_sources src/config.cpp src/console_config.cpp src/game_process.cpp src/input_monitor.cpp src/pie_overlay.cpp)
 
 configure_file(assets/interception.rc.in "${CMAKE_BINARY_DIR}/generated/interception.rc" @ONLY)
 set_source_files_properties("${CMAKE_BINARY_DIR}/generated/interception.rc" PROPERTIES OBJECT_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/interception/bin/interception.dll;${CMAKE_CURRENT_SOURCE_DIR}/third_party/interception/installer/install-interception.exe")
 add_executable(mouse_input_mapping_kernel ${runtime_sources} src/main.cpp src/runtime.cpp src/deployment.cpp "${CMAKE_BINARY_DIR}/generated/interception.rc")
 target_include_directories(mouse_input_mapping_kernel PRIVATE third_party/interception/include)
-target_link_libraries(mouse_input_mapping_kernel PRIVATE user32 winmm shell32 advapi32 ole32)
+target_link_libraries(mouse_input_mapping_kernel PRIVATE user32 winmm shell32 advapi32 ole32 gdi32 gdiplus shcore)
 
 add_executable(mouse_input_mapping_user ${runtime_sources} src/user_main.cpp src/user_runtime.cpp)
-target_link_libraries(mouse_input_mapping_user PRIVATE user32 winmm)
+target_link_libraries(mouse_input_mapping_user PRIVATE user32 winmm gdi32 gdiplus shcore)
 include(CheckIPOSupported)
 check_ipo_supported(RESULT runtime_ipo_supported OUTPUT runtime_ipo_error LANGUAGES CXX)
 if(runtime_ipo_supported)

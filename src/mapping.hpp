@@ -130,11 +130,23 @@ public:
     key_router(key_code left, key_code right, bool keyboard_override = false)
         : codes_{left, right}, keyboard_override_(keyboard_override) {}
 
+    // Adopt a key held before input interception began, without injecting a duplicate.
+    void seed_physical(key_code code) {
+        const int index = code == codes_[0] ? 0 : code == codes_[1] ? 1 : -1;
+        if (index < 0) return;
+        initial_physical_[index] = true;
+        output_down_[index] = true;
+    }
+
     template<class sink_type>
     bool physical(key_event event, sink_type&& send) {
         if (event.device < 1 || event.device > 10) return false;
         const int index = event.code == codes_[0] ? 0 : event.code == codes_[1] ? 1 : -1;
         if (index < 0) return false;
+        if (initial_physical_[index]) {
+            initial_physical_[index] = false;
+            output_device_[index] = event.device;
+        }
         const auto bit = static_cast<std::uint16_t>(1u << (event.device - 1));
         const bool repeated = (physical_[index] & bit) && event.down;
         if (event.down) physical_[index] |= bit;
@@ -166,7 +178,7 @@ public:
 
 private:
     bool physically_down(int index) const {
-        return physical_[index] != 0;
+        return initial_physical_[index] || physical_[index] != 0;
     }
     int physical_device(int index) const {
         return physical_[index] ? std::countr_zero(physical_[index]) + 1 : 0;
@@ -198,6 +210,7 @@ private:
     std::array<key_code, 2> codes_;
     std::array<std::uint16_t, 2> physical_{};
     std::array<bool, 2> output_down_{};
+    std::array<bool, 2> initial_physical_{};
     std::array<int, 2> output_device_{};
     direction desired_ = direction::idle;
     int desired_device_ = 0;
@@ -208,6 +221,7 @@ private:
 // One direction pair, with optional displacement-driven key pulses.
 class axis_mapping {
 public:
+    void seed_physical(key_code code) { router_.seed_physical(code); }
     void observe(direction_observer observer) noexcept { router_.observe(observer); }
     axis_mapping(filter_settings filter, key_code negative, key_code positive,
                  bool pulse, double hold_ratio, int period_ms, bool keyboard_override = false,

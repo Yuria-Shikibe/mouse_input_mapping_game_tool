@@ -152,11 +152,12 @@ public:
             if (preview_active) stop_preview();
             else {
                 auto config = config_provider();
-                config.map_y = true;
+                config = effective_config(config);
                 reset(); failed = false; preview_error.clear();
                 preview_info.session = 1;
                 preview_info.started = monitor_now();
-                preview_info.user_mode = true;
+                preview_info.user_mode = config.map_y;
+                preview_info.y_enabled = y_enabled(config);
                 preview_info.keys = {config.left_key, config.right_key, config.up_key, config.down_key};
                 preview.start(config, GetAncestor(window, GA_ROOT));
                 preview_active = true;
@@ -202,6 +203,7 @@ public:
         if (info.session && !local_mode) heading += std::wstring(L"  ·  ") + (info.user_mode ? L"用户态" : L"内核态")
             + L"  ·  PID " + std::to_wstring(info.pid) + ((state & 16) ? L"  ·  映射 ON" : L"  ·  映射 OFF");
         if (local_mode && preview_active && !(state & 16)) heading += L"  ·  等待 GUI 获得焦点";
+        if (state & 64) heading += L"  ·  按住恢复原始输入";
         if (paused) heading += L"  ·  画面已暂停";
         text(dc, {0, 0, client.right, px(24)}, heading);
         text(dc, {0, px(24), client.right, px(44)},
@@ -230,7 +232,7 @@ public:
         const auto axis_height = std::max(px(65), (bottom - top) / 2);
         for (auto axis = 0; axis < 2; ++axis) {
             const auto y = top + axis * axis_height;
-            const bool disabled = axis == 1 && info.session && !info.user_mode;
+            const bool disabled = axis == 1 && info.session && !info.y_enabled;
             text(dc, {0, y, px(68), y + px(22)}, axis ? L"Y 轴" : L"X 轴");
             for (int sign = 0; sign < 2; ++sign) {
                 const int index = axis * 2 + sign;
@@ -241,7 +243,7 @@ public:
                 text(dc, {x + px(19), y, x + px(140), y + px(22)}, label,
                     disabled ? RGB(140, 145, 155) : colors[index]);
             }
-            if (disabled) text(dc, {px(377), y, client.right, y + px(22)}, L"内核模式不映射 Y", RGB(120, 124, 132));
+            if (disabled) text(dc, {px(377), y, client.right, y + px(22)}, L"内核 Y 映射未开启", RGB(120, 124, 132));
             RECT plot{px(76), y + px(26), client.right - px(12), y + axis_height - px(25)};
             if (plot.right <= plot.left || plot.bottom <= plot.top) continue;
             const int middle = (plot.top + plot.bottom) / 2;

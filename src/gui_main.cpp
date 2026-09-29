@@ -1,4 +1,5 @@
 #include "config_document.hpp"
+#include "settings_layout.hpp"
 #include "gui_process.hpp"
 #include "curve_editor.hpp"
 #include "input_monitor_view.hpp"
@@ -16,7 +17,7 @@
 namespace mouse_mapping {
 namespace {
 constexpr int backend_id = 100, new_id = 101, open_id = 102, save_id = 103,
-    save_as_id = 104, defaults_id = 105, tab_id = 106, cancel_id = 108,
+    save_as_id = 104, defaults_id = 105, tab_id = 106, cancel_id = 108, clear_binding_id = 109,
     run_id = 110, copy_id = 111, steam_id = 112, check_id = 113, install_id = 114;
 constexpr int edit_base = 1000, section_base = 3000;
 constexpr std::array toolbar_specs{
@@ -98,10 +99,19 @@ void clipboard(HWND owner, const std::wstring& text) {
 }
 
 LRESULT CALLBACK form_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
-    UINT_PTR, DWORD_PTR) {
-    if (message == WM_COMMAND || message == WM_CTLCOLORSTATIC || message == WM_VSCROLL || message == WM_MOUSEWHEEL)
-        return SendMessageW(GetParent(window), message, wparam, lparam);
-    return DefSubclassProc(window, message, wparam, lparam);
+    UINT_PTR, DWORD_PTR data);
+
+constexpr wchar_t settings_form_class[] = L"MouseMappingSettingsForm";
+void register_settings_form() {
+    // STATIC uses CS_PARENTDC, which cannot be combined with WS_EX_COMPOSITED.
+    // Give the scrollable form its own class so child compositing is supported.
+    WNDCLASSEXW type{sizeof(type)};
+    type.lpfnWndProc = DefWindowProcW;
+    type.hInstance = GetModuleHandleW(nullptr);
+    type.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    type.lpszClassName = settings_form_class;
+    if (!RegisterClassExW(&type) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+        throw std::runtime_error("Cannot register settings form");
 }
 
 std::wstring binding_name(key_code code) {
@@ -114,9 +124,17 @@ std::wstring binding_name(key_code code) {
 }
 
 struct field_control { HWND label{}, input{}; };
+struct panel_control {
+    settings_panel spec;
+    HWND header{};
+    RECT bounds{};
+    int parent = -1;
+    bool expanded = true;
+    std::vector<std::size_t> fields;
+};
 class editor {
 public:
-    HWND window{}, backend{}, tabs{}, path_label{}, status{}, capture_label{}, cancel{}, dirty_label{}, form{}, kernel_note{};
+    HWND window{}, backend{}, tabs{}, path_label{}, status{}, capture_label{}, cancel{}, clear_binding{}, dirty_label{}, form{};
     HWND explanation{}, command_label{}, command{}, output{}, tooltip{};
     HWND input_monitor{};
     HFONT font{};
@@ -124,9 +142,9 @@ public:
     int page = 0;
     bool populating = false;
     int capture_index = -1;
+    int swallowed_mouse = -1;
     key_code swallowed_key = 0;
-    std::array<HWND, 3> sections{};
-    std::array<bool, 3> expanded{true, false, true};
+    std::vector<panel_control> panels;
     int scroll_position = 0, wheel_remainder = 0;
     HBRUSH dirty_brush = CreateSolidBrush(RGB(255, 222, 150));
     config_document document;
@@ -144,7 +162,11 @@ public:
     HWND control(const wchar_t* type, const wchar_t* text, DWORD style, int id = 0, DWORD ex = 0, HWND parent = nullptr) {
         const auto child = CreateWindowExW(ex, type, text, WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | style,
             0, 0, 0, 0, parent ? parent : window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), GetModuleHandleW(nullptr), nullptr);
-        if (!child) throw std::runtime_error("Cannot create window control");
+        if (!child) {
+            const auto error = GetLastError();
+            throw std::runtime_error("Cannot create window control: " + utf8(type) +
+                " (id=" + std::to_string(id) + ", Windows error=" + std::to_string(error) + ")");
+        }
         SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         return child;
     }
@@ -162,7 +184,7 @@ public:
         if (!child) return;
         // Do not paint intermediate positions. layout() invalidates the complete
         // sibling tree after all moves and visibility changes have finished.
-        const UINT flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW |
+        const UINT flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOCOPYBITS |
             (visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW | SWP_NOMOVE | SWP_NOSIZE);
         SetWindowPos(child, nullptr, px(x), px(y), px(width), px(height), flags);
     }
@@ -210,12 +232,9 @@ public:
             TabCtrl_InsertItem(tabs, TabCtrl_GetItemCount(tabs), &item);
         }
         dirty_label = control(WC_STATICW, L"", SS_LEFT | SS_CENTERIMAGE);
-        form = control(WC_STATICW, L"", WS_CLIPCHILDREN | WS_VSCROLL, 0, WS_EX_CONTROLPARENT);
-        if (!SetWindowSubclass(form, form_proc, 1, 0)) throw std::runtime_error("Cannot initialize settings panel");
-        for (std::size_t i = 0; i < sections.size(); ++i)
-            sections[i] = control(WC_BUTTONW, L"", BS_PUSHBUTTON | BS_LEFT | BS_NOTIFY | WS_TABSTOP,
-                section_base + static_cast<int>(i), 0, form);
-        kernel_note = control(WC_STATICW, L"当前没有内核态独占设置。X 轴映射使用上方共享设置。", SS_LEFT, 0, 0, form);
+        register_settings_form();
+        form = control(settings_form_class, L"", WS_CLIPCHILDREN | WS_VSCROLL, 0, WS_EX_CONTROLPARENT | WS_EX_COMPOSITED);
+        if (!SetWindowSubclass(form, form_proc, 1, reinterpret_cast<DWORD_PTR>(this))) throw std::runtime_error("Cannot initialize settings panel");
         fields.reserve(config_fields().size());
         for (std::size_t i = 0; i < config_fields().size(); ++i) {
             const auto& field = config_fields()[i];
@@ -223,7 +242,7 @@ public:
             row.label = control(WC_STATICW, field.label, SS_LEFT | SS_NOTIFY, 0, 0, form);
             if (field.kind == field_kind::toggle)
                 row.input = control(WC_BUTTONW, L"启用", BS_AUTOCHECKBOX | BS_NOTIFY | WS_TABSTOP, edit_base + static_cast<int>(i), 0, form);
-            else if (field.kind == field_kind::key || field.kind == field_kind::curve)
+            else if (field.kind == field_kind::key || field.kind == field_kind::input || field.kind == field_kind::curve)
                 row.input = control(WC_BUTTONW, L"", BS_PUSHBUTTON | BS_NOTIFY | WS_TABSTOP, edit_base + static_cast<int>(i), 0, form);
             else {
                 row.input = control(WC_EDITW, L"", ES_AUTOHSCROLL | WS_TABSTOP,
@@ -234,6 +253,7 @@ public:
             add_tooltip(row.input, field.tooltip);
             fields.push_back(row);
         }
+        create_panels();
         explanation = control(WC_STATICW, L"", SS_LEFT);
         command_label = control(WC_STATICW, L"运行命令 / Steam 启动选项（生成前请保存）：", SS_LEFT);
         command = control(WC_EDITW, L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP, 0, WS_EX_CLIENTEDGE);
@@ -243,6 +263,7 @@ public:
         output = control(WC_EDITW, L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP, 0, WS_EX_CLIENTEDGE);
         SendMessageW(output, EM_SETLIMITTEXT, 262144, 0);
         capture_label = control(WC_STATICW, L"", SS_LEFT);
+        clear_binding = control(WC_BUTTONW, L"清除绑定", BS_PUSHBUTTON | WS_TABSTOP, clear_binding_id);
         cancel = control(WC_BUTTONW, L"取消录入", WS_TABSTOP | BS_PUSHBUTTON, cancel_id);
         status = control(WC_STATICW, L"", SS_LEFT);
         input_monitor = create_input_monitor_view(window, font, [this] { return document.snapshot(); });
@@ -259,6 +280,136 @@ public:
         populate();
         SetTimer(window, 1, 100, nullptr);
     }
+    std::size_t field_index(const std::string& name) const {
+        const auto specs = config_fields();
+        for (std::size_t i = 0; i < specs.size(); ++i)
+            if (name == specs[i].name) return i;
+        throw std::runtime_error("Unknown layout field: " + name);
+    }
+    void create_panel(settings_panel spec, int parent) {
+        const auto index = panels.size();
+        auto children = std::move(spec.children);
+        panel_control panel{std::move(spec), {}, {}, parent};
+        for (const auto& name : panel.spec.fields) panel.fields.push_back(field_index(name));
+        panel.header = control(WC_BUTTONW, L"", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP,
+            section_base + static_cast<int>(index), 0, form);
+        if (!panel.spec.toggle.empty())
+            add_tooltip(panel.header, config_fields()[field_index(panel.spec.toggle)].tooltip);
+        panels.push_back(std::move(panel));
+        for (auto& child : children) create_panel(std::move(child), static_cast<int>(index));
+    }
+    void create_panels() {
+        for (auto& spec : settings_panels()) create_panel(std::move(spec), -1);
+        // Fail early if a future configuration field is omitted or shown twice.
+        std::vector<int> uses(fields.size());
+        for (const auto& panel : panels) {
+            for (const auto index : panel.fields) ++uses[index];
+            if (!panel.spec.toggle.empty()) {
+                const auto index = field_index(panel.spec.toggle);
+                ++uses[index];
+                // The header owns this toggle; the original row never participates in layout.
+                place(fields[index].label, 0, 0, 0, 0, false);
+                place(fields[index].input, 0, 0, 0, 0, false);
+            }
+        }
+        for (const auto count : uses)
+            if (count != 1) throw std::runtime_error("Settings layout must contain every field exactly once");
+        // Native dialog navigation follows the same order as the visible panels.
+        HWND previous = HWND_TOP;
+        const auto order = [&](HWND child) {
+            SetWindowPos(child, previous, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            previous = child;
+        };
+        for (const auto& panel : panels) {
+            order(panel.header);
+            for (const auto index : panel.fields) { order(fields[index].label); order(fields[index].input); }
+        }
+    }
+    bool panel_open(const panel_control& panel) const {
+        return panel.spec.toggle.empty() ? panel.expanded : document.values.at(panel.spec.toggle) == "1";
+    }
+    int panel_height(std::size_t index) const {
+        const auto& panel = panels[index];
+        int height = 34;
+        if (!panel_open(panel)) return height;
+        height += 8 + static_cast<int>(panel.fields.size()) * 32;
+        for (std::size_t child = index + 1; child < panels.size(); ++child)
+            if (panels[child].parent == static_cast<int>(index)) height += panel_height(child) + 8;
+        return height + 6;
+    }
+    void place_panel(std::size_t index, int x, int y, int width, bool visible = true) {
+        auto& panel = panels[index];
+        const bool open = panel_open(panel);
+        std::wstring caption = open ? L"▼  " : L"▶  ";
+        caption += panel.spec.title;
+        if (!panel.spec.toggle.empty()) caption += open ? L"  · 已启用（点击关闭）" : L"  · 已关闭（点击启用）";
+        if (window_text(panel.header) != caption) SetWindowTextW(panel.header, caption.c_str());
+        panel.bounds = visible ? RECT{px(x), px(y), px(x + width), px(y + panel_height(index))} : RECT{};
+        place(panel.header, x + 1, y + 1, width - 2, 32, visible);
+        const bool show_contents = visible && open;
+        y += 42;
+        for (const auto field : panel.fields) {
+            place(fields[field].label, x + 12, y + 3, width - 210, 25, show_contents);
+            place(fields[field].input, x + width - 186, y, 174, 26, show_contents);
+            y += 32;
+        }
+        for (std::size_t child = index + 1; child < panels.size(); ++child) {
+            if (panels[child].parent != static_cast<int>(index)) continue;
+            place_panel(child, x + 12, y, width - 24, show_contents);
+            y += panel_height(child) + 8;
+        }
+    }
+    void layout_settings(int viewport) {
+        int content = 0;
+        for (std::size_t i = 0; i < panels.size(); ++i) {
+            if (panels[i].parent == -1) content += panel_height(i) + 12;
+        }
+        scroll_position = std::clamp(scroll_position, 0, std::max(0, content - viewport));
+        SCROLLINFO scroll{sizeof(scroll), SIF_RANGE | SIF_PAGE | SIF_POS};
+        scroll.nMax = content - 1; scroll.nPage = static_cast<UINT>(viewport); scroll.nPos = scroll_position;
+        SetScrollInfo(form, SB_VERT, &scroll, FALSE);
+        RECT bounds{}; GetClientRect(form, &bounds);
+        const int width = MulDiv(bounds.right, 96, static_cast<int>(dpi)) - 4;
+        int y = -scroll_position;
+        for (std::size_t i = 0; i < panels.size(); ++i) {
+            if (panels[i].parent != -1) continue;
+            place_panel(i, 0, y, width); y += panel_height(i) + 12;
+        }
+    }
+    void paint_settings(HDC dc) const {
+        RECT client{}; GetClientRect(form, &client);
+        // Borders are pixels, not overlapping child windows: WS_CLIPCHILDREN
+        // must only exclude actual controls, never the empty area inside a panel.
+        FillRect(dc, &client, GetSysColorBrush(COLOR_BTNFACE));
+        for (const auto& panel : panels)
+            if (!IsRectEmpty(&panel.bounds)) FrameRect(dc, &panel.bounds, GetSysColorBrush(COLOR_BTNSHADOW));
+    }
+    bool draw_panel(const DRAWITEMSTRUCT& item) const {
+        if (item.CtlID < section_base || item.CtlID >= section_base + panels.size()) return false;
+        const auto& panel = panels[item.CtlID - section_base];
+        constexpr std::array colors{RGB(226, 232, 240), RGB(214, 233, 252), RGB(215, 240, 228),
+            RGB(255, 235, 199), RGB(235, 223, 250), RGB(217, 239, 242), RGB(249, 222, 231)};
+        const bool high_contrast = [] {
+            HIGHCONTRASTW value{sizeof(value)};
+            return SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(value), &value, 0)
+                && (value.dwFlags & HCF_HIGHCONTRASTON);
+        }();
+        const auto brush = CreateSolidBrush(high_contrast ? GetSysColor(COLOR_BTNFACE)
+            : colors[static_cast<std::size_t>(panel.spec.color)]);
+        FillRect(item.hDC, &item.rcItem, brush); DeleteObject(brush);
+        SetBkMode(item.hDC, TRANSPARENT);
+        SetTextColor(item.hDC, high_contrast ? GetSysColor(COLOR_BTNTEXT) : RGB(32, 45, 60));
+        const auto old_font = SelectObject(item.hDC, font);
+        auto text_rect = item.rcItem; InflateRect(&text_rect, -px(10), 0);
+        if (item.itemState & ODS_SELECTED) OffsetRect(&text_rect, px(1), px(1));
+        const auto caption = window_text(item.hwndItem);
+        DrawTextW(item.hDC, caption.c_str(), -1, &text_rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        SelectObject(item.hDC, old_font);
+        if (item.itemState & ODS_FOCUS) {
+            auto focus = item.rcItem; InflateRect(&focus, -px(3), -px(3)); DrawFocusRect(item.hDC, &focus);
+        }
+        return true;
+    }
     void layout() {
         RECT client{}; GetClientRect(window, &client);
         const auto width = MulDiv(client.right, 96, static_cast<int>(dpi));
@@ -270,39 +421,7 @@ public:
         place(tabs, 16, 114, width - 32, height - 210);
         const int viewport = std::max(100, height - 334);
         place(form, 28, 153, width - 56, viewport, page == 0);
-        // Native child clipping keeps partially scrolled rows inside the panel.
-        int content = 0;
-        for (std::size_t section = 0; section < sections.size(); ++section) {
-            content += 36;
-            if (!expanded[section]) continue;
-            if (section == 1) content += 30;
-            else for (const auto& field : config_fields())
-                if (field.user_only == (section == 2)) content += 30;
-        }
-        scroll_position = std::clamp(scroll_position, 0, std::max(0, content - viewport));
-        SCROLLINFO scroll{sizeof(scroll), SIF_RANGE | SIF_PAGE | SIF_POS};
-        scroll.nMax = content - 1; scroll.nPage = static_cast<UINT>(viewport); scroll.nPos = scroll_position;
-        SetScrollInfo(form, SB_VERT, &scroll, TRUE);
-        RECT panel{}; GetClientRect(form, &panel);
-        const int panel_width = MulDiv(panel.right, 96, static_cast<int>(dpi));
-        int y = -scroll_position;
-        constexpr std::array names{L"共享 · 两种运行模式通用", L"内核 · 无独占选项", L"用户 · Y 轴、鼠标按钮与滚轮"};
-        for (std::size_t section = 0; section < sections.size(); ++section) {
-            SetWindowTextW(sections[section], (std::wstring(expanded[section] ? L"▼  " : L"▶  ") + names[section]).c_str());
-            place(sections[section], 0, y, panel_width - 4, 30);
-            y += 36;
-            if (section == 1) {
-                place(kernel_note, 12, y + 3, panel_width - 24, 24, expanded[section]);
-                if (expanded[section]) y += 30;
-                continue;
-            }
-            for (std::size_t i = 0; i < fields.size(); ++i) {
-                if (config_fields()[i].user_only != (section == 2)) continue;
-                place(fields[i].label, 12, y + 3, panel_width - 208, 24, expanded[section]);
-                place(fields[i].input, panel_width - 186, y, 174, 26, expanded[section]);
-                if (expanded[section]) y += 30;
-            }
-        }
+        layout_settings(viewport);
         place(explanation, 30, page == 1 ? 154 : height - 172, width - 60, 66, page != 2);
         place(input_monitor, 30, 153, width - 60, height - 263, page == 2);
         place(command_label, 30, 231, width - 60, 22, page == 1);
@@ -313,7 +432,9 @@ public:
             EnableWindow(tool_buttons[i], (i != 3 && i != 4) || (!document.user_mode && !tool.active()));
         }
         place(output, 30, 410, width - 60, std::max(60, height - 524), page == 1);
-        place(capture_label, 20, height - 84, width - 160, 32, capture_index >= 0);
+        place(capture_label, 20, height - 84, width - 280, 32, capture_index >= 0);
+        place(clear_binding, width - 240, height - 86, 104, 28,
+            capture_index >= 0 && config_fields()[static_cast<std::size_t>(capture_index)].kind == field_kind::input);
         place(cancel, width - 124, height - 86, 104, 28, capture_index >= 0);
         place(status, 20, height - 48, width - 40, 42);
         // WS_CLIPCHILDREN on the main window excludes the controls from its
@@ -324,8 +445,8 @@ public:
     void update_curve_controls() {
         for (std::size_t i = 0; i < fields.size(); ++i) {
             const std::string name = config_fields()[i].name;
-            if (name.size() < 2 || (name[0] != 'x' && name[0] != 'y') || name[1] != '_') continue;
-            const auto axis = name.substr(0, 2);
+            if (!name.starts_with("kernel_y_") && !name.starts_with("x_") && !name.starts_with("y_")) continue;
+            const auto axis = name.starts_with("kernel_y_") ? std::string("kernel_y_") : name.substr(0, 2);
             const bool pulse = document.values.at(axis + "pulse_enabled") == "1";
             const bool curve = document.values.at(axis + "curve_enabled") == "1";
             if (name == axis + "curve_enabled") EnableWindow(fields[i].input, pulse);
@@ -336,7 +457,7 @@ public:
     }
     void instructions() {
         const wchar_t* text = nullptr;
-        if (page == 0) text = L"点击键位按钮后按下单键即可绑定，包括 Enter / Esc；切到其他窗口取消录入。\n共享设置同时用于两种运行模式；用户区始终可编辑，仅用户态运行时使用。悬停参数查看说明。";
+        if (page == 0) text = L"点击键位按钮后按下单键即可绑定；恢复键还支持鼠标五键和清除绑定。切换窗口取消录入。\n同色标题表示同类功能；点击功能标题启用 / 关闭并展开 / 收起，参数会保留。悬停参数查看说明。";
         else text = L"运行程序始终从 OFF 开始；GUI 关闭不影响独立终端。使用切换键启停映射，终端 Ctrl+C 退出。\nSteam 仅跟踪直接启动的游戏进程。驱动安装可能请求管理员权限并要求重启。";
         SetWindowTextW(explanation, text);
     }
@@ -352,6 +473,13 @@ public:
             else {
                 auto value = wide(entry->second);
                 if (field.kind == field_kind::curve) value = L"编辑曲线…";
+                if (field.kind == field_kind::input) {
+                    try {
+                        const auto binding = parse_input_binding(entry->second);
+                        value = binding.kind == input_kind::keyboard ? binding_name(binding.code)
+                            : binding.kind == input_kind::none ? L"未绑定" : wide(format_input_binding(binding));
+                    } catch (...) {}
+                }
                 if (field.kind == field_kind::key) {
                     try { value = binding_name(parse_key(entry->second)); }
                     catch (...) { /* Keep invalid draft text visible. */ }
@@ -386,13 +514,49 @@ public:
     void stop_capture() {
         if (capture_index >= 0) {
             const auto index = static_cast<std::size_t>(capture_index);
-            SetWindowTextW(fields[index].input, binding_name(parse_key(document.values.at(config_fields()[index].name))).c_str());
+            const auto& field = config_fields()[index];
+            const auto value = document.values.at(field.name);
+            std::wstring label;
+            if (field.kind == field_kind::input) {
+                const auto binding = parse_input_binding(value);
+                label = binding.kind == input_kind::keyboard ? binding_name(binding.code)
+                    : binding.kind == input_kind::none ? L"未绑定" : wide(format_input_binding(binding));
+            } else label = binding_name(parse_key(value));
+            SetWindowTextW(fields[index].input, label.c_str());
         }
         capture_index = -1;
         ShowWindow(cancel, SW_HIDE); ShowWindow(capture_label, SW_HIDE);
+        ShowWindow(clear_binding, SW_HIDE);
     }
     bool capture_message(const MSG& message) {
         if (GetForegroundWindow() != window) return false;
+        int mouse_button = -1;
+        bool mouse_down = false;
+        switch (message.message) {
+        case WM_LBUTTONDOWN: case WM_LBUTTONUP: mouse_button = 0; mouse_down = message.message == WM_LBUTTONDOWN; break;
+        case WM_RBUTTONDOWN: case WM_RBUTTONUP: mouse_button = 1; mouse_down = message.message == WM_RBUTTONDOWN; break;
+        case WM_MBUTTONDOWN: case WM_MBUTTONUP: mouse_button = 2; mouse_down = message.message == WM_MBUTTONDOWN; break;
+        case WM_XBUTTONDOWN: case WM_XBUTTONUP:
+            mouse_button = GET_XBUTTON_WPARAM(message.wParam) == XBUTTON1 ? 3 : 4;
+            mouse_down = message.message == WM_XBUTTONDOWN; break;
+        }
+        if (mouse_button >= 0) {
+            if (mouse_button == swallowed_mouse) {
+                if (!mouse_down) { swallowed_mouse = -1; ReleaseCapture(); }
+                return true;
+            }
+            if (capture_index >= 0 && mouse_down && message.hwnd != cancel && message.hwnd != clear_binding
+                && config_fields()[static_cast<std::size_t>(capture_index)].kind == field_kind::input) {
+                document.set(config_fields()[static_cast<std::size_t>(capture_index)].name,
+                    format_input_binding({input_kind::mouse, static_cast<key_code>(mouse_button)}));
+                swallowed_mouse = mouse_button;
+                SetCapture(window);
+                stop_capture(); title(); SetWindowTextW(command, L"");
+                set_status(L"鼠标键已绑定；保存后下次启动生效。");
+                return true;
+            }
+            return false;
+        }
         const bool up = message.message == WM_KEYUP || message.message == WM_SYSKEYUP;
         if (!up && message.message != WM_KEYDOWN && message.message != WM_SYSKEYDOWN) return false;
         const auto code = static_cast<key_code>(((message.lParam >> 16) & 0xff) |
@@ -432,7 +596,10 @@ public:
     void scroll_form(int amount) {
         if (page != 0) return;
         scroll_position += amount;
-        layout();
+        RECT client{}; GetClientRect(form, &client);
+        layout_settings(MulDiv(client.bottom, 96, static_cast<int>(dpi)));
+        RedrawWindow(form, nullptr, nullptr,
+            RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
     }
     void check_executable(const std::filesystem::path& executable) {
         if (!std::filesystem::is_regular_file(executable))
@@ -455,11 +622,12 @@ public:
                 }
                 return;
             }
-            if (field.kind == field_kind::key && notification == BN_CLICKED) {
+            if ((field.kind == field_kind::key || field.kind == field_kind::input) && notification == BN_CLICKED) {
                 stop_capture();
                 capture_index = static_cast<int>(index);
                 SetWindowTextW(fields[index].input, L"请按键…");
-                SetWindowTextW(capture_label, L"按下单个目标键立即绑定；点击取消或切换窗口可退出录入。");
+                SetWindowTextW(capture_label, field.kind == field_kind::input
+                    ? L"按键盘或鼠标键绑定；也可清除绑定。" : L"按下单个目标键立即绑定；点击取消或切换窗口可退出录入。");
                 layout(); SetFocus(window); return;
             }
             if (field.kind == field_kind::toggle && notification == BN_CLICKED)
@@ -468,18 +636,29 @@ public:
                 document.set(field.name, utf8(window_text(fields[index].input)));
             else return;
             update_curve_controls();
-            title(); SetWindowTextW(command, L""); return;
+            title(); SetWindowTextW(command, L"");
+            if (field.kind == field_kind::toggle) layout();
+            return;
         }
-        if (id >= section_base && id < section_base + 3 && notification == BN_SETFOCUS) {
-            reveal(sections[static_cast<std::size_t>(id - section_base)]); return;
-        }
-        if (id >= section_base && id < section_base + 3 && notification == BN_CLICKED) {
-            stop_capture();
-            const auto section = static_cast<std::size_t>(id - section_base);
-            expanded[section] = !expanded[section];
-            layout(); return;
+        if (id >= section_base && id < section_base + static_cast<int>(panels.size())) {
+            auto& panel = panels[static_cast<std::size_t>(id - section_base)];
+            if (notification == BN_SETFOCUS) { reveal(panel.header); return; }
+            if (notification == BN_CLICKED) {
+                stop_capture();
+                if (panel.spec.toggle.empty()) panel.expanded = !panel.expanded;
+                else {
+                    document.set(panel.spec.toggle, panel_open(panel) ? "0" : "1");
+                    update_curve_controls(); title(); SetWindowTextW(command, L"");
+                }
+                layout(); reveal(panel.header);
+            }
+            return;
         }
         if (id == cancel_id) { stop_capture(); return; }
+        if (id == clear_binding_id && capture_index >= 0) {
+            document.set(config_fields()[static_cast<std::size_t>(capture_index)].name, "NONE");
+            stop_capture(); title(); SetWindowTextW(command, L""); return;
+        }
         if (id == backend_id && notification == CBN_SELCHANGE) {
             const bool user = SendMessageW(backend, CB_GETCURSEL, 0, 0) == 0;
             // Restore selection before any operation that may cancel or throw.
@@ -568,6 +747,30 @@ public:
     }
 };
 
+LRESULT CALLBACK form_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
+    UINT_PTR, DWORD_PTR data) {
+    const auto* app = reinterpret_cast<const editor*>(data);
+    switch (message) {
+    case WM_ERASEBKGND:
+        // WM_PAINT fills every exposed pixel. Composite the form's children
+        // together so background erasure and control painting are not separate frames.
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT paint{};
+        const auto dc = BeginPaint(window, &paint);
+        app->paint_settings(dc);
+        EndPaint(window, &paint);
+        return 0;
+    }
+    case WM_PRINTCLIENT:
+        app->paint_settings(reinterpret_cast<HDC>(wparam)); return 0;
+    case WM_DRAWITEM: case WM_COMMAND: case WM_CTLCOLORSTATIC: case WM_VSCROLL: case WM_MOUSEWHEEL:
+        return SendMessageW(GetParent(window), message, wparam, lparam);
+    default:
+        return DefSubclassProc(window, message, wparam, lparam);
+    }
+}
+
 LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     auto* app = reinterpret_cast<editor*>(GetWindowLongPtrW(window, GWLP_USERDATA));
     if (message == WM_NCCREATE) {
@@ -579,6 +782,9 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     try {
         switch (message) {
         case WM_CREATE: app->create(); return 0;
+        case WM_DRAWITEM:
+            if (app->draw_panel(*reinterpret_cast<DRAWITEMSTRUCT*>(lparam))) return TRUE;
+            break;
         case WM_CTLCOLORSTATIC:
             if (reinterpret_cast<HWND>(lparam) == app->dirty_label && (app->document.dirty || app->document.path.empty())) {
                 const auto dc = reinterpret_cast<HDC>(wparam);

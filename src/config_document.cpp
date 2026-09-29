@@ -18,7 +18,37 @@ std::span<const config_field> config_fields() {
         {"x2_key", L"鼠标侧键 2", field_kind::key, true},
         {"wheel_up_key", L"滚轮向上", field_kind::key, true},
         {"wheel_down_key", L"滚轮向下", field_kind::key, true},
+        {"chord_enabled", L"一键双键", field_kind::toggle, false, L"默认关闭。总开关开启且未暂停时，按住触发键同时按住两个目标键；松开时释放。保留触发键原始输入。"},
+        {"chord_trigger_key", L"双键触发键", field_kind::key, false, L"默认左 Shift；仅实体键盘触发，合成输入不会递归触发。"},
+        {"chord_first_key", L"双键目标 1", field_kind::key, false},
+        {"chord_second_key", L"双键目标 2", field_kind::key, false},
         {"toggle_key", L"映射开关", field_kind::key, false},
+        {"pie_trigger", L"Pie 触发键（固定输出 ↑ ↓ ← →）", field_kind::input, false,
+            L"点击后按键盘键或鼠标五键立即绑定，清除绑定即禁用。总开关开启后，按住打开、移动鼠标选区、松开确认；移回中心取消。内核态阻断 XY 和触发键，用户态保留原始输入。不可与总开关、旁路或映射输出键冲突。"},
+        {"pie_visual_enabled", L"屏幕中心显示 Pie 菜单", field_kind::toggle, false,
+            L"游戏所在显示器正中心的透明置顶窗口，不抢焦点。关闭显示仍可盲操作；真正独占全屏建议关闭显示。"},
+        {"pie_deadzone_counts", L"Pie 选中死区（counts）", field_kind::number, false,
+            L"1–10000 原始 counts，默认 12；越小越灵敏。回到该值的一半以内清除选择，松开取消。"},
+        {"pie_radius_counts", L"Pie 最大偏移（counts）", field_kind::number, false,
+            L"必须大于死区且不超过 100000，默认 80。限制累计位移，避免甩远后难以反向选择。"},
+        {"pie_hysteresis_degrees", L"Pie 边界防抖（度）", field_kind::number, false,
+            L"0–20°，默认 8°；选中扇区后需越过扩展边界才换区，不额外等待或平滑。"},
+        {"pie_key_hold_ms", L"Pie 方向键短按（ms）", field_kind::number, false,
+            L"1–200 ms，默认 20 ms；松开触发键立即发出所选方向键，再异步释放。实体方向键已按住时不强制松按。"},
+        {"bypass_key_1", L"按住恢复原始输入 1", field_kind::input, false, L"键盘或鼠标五键；任意一个按住即暂停所有映射和阻断，松开后恢复。可清除绑定。"},
+        {"bypass_key_2", L"按住恢复原始输入 2", field_kind::input, false, L"与第一个恢复键为“或”关系；不能与映射总开关键相同。"},
+        {"kernel_y_enabled", L"Y 映射", field_kind::toggle, false, L"内核态独立 Y 映射；与阻断开关相互独立。"},
+        {"kernel_y_block", L"阻断原始 Y 输入", field_kind::toggle, false, L"仅在总开关开启且未按住恢复键时阻断相对 Y 输入，与 Y 映射开关独立。"},
+        {"kernel_y_up_key", L"Y− 上移", field_kind::key, false},
+        {"kernel_y_down_key", L"Y+ 下移", field_kind::key, false},
+        {"kernel_y_pulse_enabled", L"Y 脉冲模式", field_kind::toggle, false},
+        {"kernel_y_hold_ratio", L"Y 按住比例（0–1）", field_kind::number, false},
+        {"kernel_y_smoothing_factor", L"Y 插值平滑（0–1）", field_kind::number, false},
+        {"kernel_y_start_counts", L"Y 启动阈值（1–10000）", field_kind::number, false},
+        {"kernel_y_reverse_counts", L"Y 反向阈值（启动阈值–10000）", field_kind::number, false},
+        {"kernel_y_curve_enabled", L"Y 灵敏度曲线", field_kind::toggle, false},
+        {"kernel_y_curve_full_speed", L"Y 满量程速度（counts/s）", field_kind::number, false},
+        {"kernel_y_curve_points", L"Y 速度 → 按住比例", field_kind::curve, false},
         {"window_ms", L"触发窗口（1–1000 ms）", field_kind::number, false, L"在此时间内累计鼠标净位移，达到启动或反向阈值才确认方向；过期位移丢弃，正反位移互相抵消。长按模式直接使用此值；脉冲模式实际使用 max(此值, 2 × 释放超时, 120 ms)。这是时间窗口，不是应用窗口。"},
         {"release_ms", L"释放超时（触发窗口–2000 ms）", field_kind::number, false, L"超过此时间未再次确认方向就释放合成方向键。值越小停止越快，但慢移可能断续；必须不小于触发窗口。脉冲模式超时还会清除待发脉冲。"},
         {"x_keyboard_override_enabled", L"X 实体键盘优先", field_kind::toggle, false, L"实体 X 左右映射键按住时暂停鼠标 X 合成输出。最后一个实体方向键松开后，恢复仍有效的鼠标方向。两个后端使用同一设置。"},
@@ -70,7 +100,7 @@ void config_document::reset(bool user, const std::filesystem::path& file) {
 }
 void config_document::open(bool user, const std::filesystem::path& file) {
     const auto absolute = std::filesystem::absolute(file);
-    const auto config = load_config(absolute, true);
+    const auto config = load_config(absolute, user);
     assign(config);
     user_mode = user;
     path = absolute;
@@ -96,7 +126,7 @@ configuration config_document::snapshot() const {
         output << name << '=' << value << '\n';
     }
     std::istringstream input(output.str());
-    return read_config(input, true, true);
+    return read_config(input, user_mode, true);
 }
 void config_document::save(const std::filesystem::path& file) {
     const auto absolute = std::filesystem::absolute(file);

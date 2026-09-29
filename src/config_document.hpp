@@ -5,13 +5,17 @@
 #include <vector>
 
 namespace mouse_mapping {
-enum class field_kind { key, number, toggle, curve };
+enum class field_kind { key, number, toggle, curve, input };
 struct config_field {
     const char* name;
     const wchar_t* label;
     field_kind kind;
     bool user_only;
     const wchar_t* tooltip = nullptr;
+    std::size_t section() const {
+        return std::string_view(name).starts_with("pie_") ? 3
+            : std::string_view(name).starts_with("kernel_") ? 1 : user_only ? 2 : 0;
+    }
 };
 std::span<const config_field> config_fields();
 

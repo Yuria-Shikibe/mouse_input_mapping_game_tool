@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
 
 namespace mouse_mapping {
 
@@ -19,7 +20,10 @@ private:
 };
 
 bool driver_registered();
-bool ensure_driver();
+unsigned long ensure_driver(bool interactive);
 unsigned long install_driver();
+std::wstring driver_diagnosis(unsigned long* device_error = nullptr);
+void report_startup(const std::wstring& message, bool interactive);
+std::wstring startup_error_text(const char* message);
 
 } // namespace mouse_mapping

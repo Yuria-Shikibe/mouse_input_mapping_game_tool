@@ -1,7 +1,10 @@
 #include "runtime.hpp"
+#include "chord_mapping.hpp"
 #include "deployment.hpp"
 #include "input_monitor.hpp"
 #include "input_schedule.hpp"
+#include "bypass.hpp"
+#include "pie_runtime.hpp"
 #include <windows.h>
 #include <mmsystem.h>
 #include <interception.h>
@@ -26,11 +29,9 @@ namespace {
 class driver_api {
 public:
     driver_api() {
-        auto path = executable_directory() / L"interception.dll";
-        if (!std::filesystem::exists(path)) {
-            extracted_ = std::make_unique<embedded_file>(embedded_asset::library);
-            path = extracted_->path();
-        }
+        // Use the known bundled version even if a stale/corrupt DLL sits beside the EXE.
+        extracted_ = std::make_unique<embedded_file>(embedded_asset::library);
+        const auto path = extracted_->path();
         module_ = LoadLibraryExW(path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
         if (!module_) fail_windows("Cannot load Interception library");
         try {
@@ -203,8 +204,9 @@ void check_driver() {
                  "This checks connectivity only; verify actual X suppression in your target application.\n";
 }
 
-void run(const configuration& config, const game_command* game, input_priority priority) {
-    validate(config);
+void run(const configuration& source, const game_command* game, input_priority priority) {
+    validate(source);
+    const auto config = effective_config(source);
     runtime_environment environment;
     input_thread_priority thread_priority(priority);
     driver_session session;
@@ -214,29 +216,91 @@ void run(const configuration& config, const game_command* game, input_priority p
         config.x_pulse_enabled, config.x_hold_ratio, config.pulse_period_ms,
         config.x_keyboard_override_enabled, config.x_curve, config.x_smoothing_factor);
     axis.observe(monitor.observer(false));
+    axis_mapping vertical(config.axis_filter(true), config.up_key, config.down_key,
+        config.y_pulse_enabled, config.y_hold_ratio, config.pulse_period_ms,
+        false, config.y_curve, config.y_smoothing_factor);
+    vertical.observe(monitor.observer(true));
+    bypass_state bypass(config);
+    pie_runtime pie(config);
     toggle_latch toggle;
     bool enabled = false;
     bool absolute_warning = false;
     int output_keyboard = 0;
-    const auto send_key = [&](key_event event) { session.send_key(event); };
+    chord_mapping chord(config.chord);
+    const auto send_raw_key = [&](key_event event) { session.send_key(event); };
+    const auto send_key = [&](key_event event) { chord.output(event, send_raw_key); };
+    const auto release_xy = [&] {
+        std::exception_ptr failure;
+        try { axis.release(output_keyboard, send_key); } catch (...) { failure = std::current_exception(); }
+        try { vertical.release(output_keyboard, send_key); } catch (...) { if (!failure) failure = std::current_exception(); }
+        if (failure) std::rethrow_exception(failure);
+    };
+    const auto release = [&] {
+        std::exception_ptr failure;
+        try { chord.cancel(send_raw_key); } catch (...) { failure = std::current_exception(); }
+        try { pie.cancel(send_key); } catch (...) { failure = std::current_exception(); }
+        try { release_xy(); } catch (...) { if (!failure) failure = std::current_exception(); }
+        if (failure) std::rethrow_exception(failure);
+    };
+    const auto tick = [&](time_point now) {
+        pie.tick(now, send_key);
+        if (!enabled || bypass.held() || pie.opened()) return;
+        axis.tick(now, output_keyboard, send_key);
+        if (config.kernel_y_enabled) vertical.tick(now, output_keyboard, send_key);
+    };
+    bool bypassed = false;
+    const auto sync_bypass = [&](bool packet = false) {
+        const bool next = bypass.held() || packet;
+        if (next && !bypassed) release();
+        if (next != bypassed) monitor.bypassed(next);
+        bypassed = next;
+    };
     session.enable_filters();
+    pie.start();
+    for (const auto key : {config.left_key, config.right_key})
+        if (key_is_down(key)) axis.seed_physical(key);
+    if (config.kernel_y_enabled) for (const auto key : {config.up_key, config.down_key})
+        if (key_is_down(key)) vertical.seed_physical(key);
+    if (config.chord.enabled) for (const auto key : {config.chord.first, config.chord.second})
+        if (key_is_down(key)) chord.seed(key);
+    bypass.seed();
+    sync_bypass();
     std::cout << "OFF - press the toggle key to enable. Ctrl+C exits.\n" << std::flush;
     try {
         std::unique_ptr<game_process> child;
         if (game) child = std::make_unique<game_process>(*game);
         auto maintenance = clock_type::now();
         auto game_check = maintenance;
+        auto device_check = maintenance;
         alignas(InterceptionMouseStroke) std::array<char, sizeof(InterceptionMouseStroke) * 32> buffer;
         for (;;) {
             auto now = clock_type::now();
             if (now >= maintenance) {
                 monitor.heartbeat(now);
                 axis.observe(monitor.observer(false));
+                vertical.observe(monitor.observer(true));
+                bypass.refresh_initial();
+                sync_bypass();
+                pie.maintenance(send_key);
                 maintenance = now + milliseconds(50);
             }
             if (stop_requested.load()) {
                 if (child) std::cout << "Daemon: mapping stopped; game process continues.\n" << std::flush;
                 break;
+            }
+            if ((bypass.held() || pie.opened() || chord.held()) && now >= device_check) {
+                device_check = now + milliseconds(500);
+                for (int id = 1; id <= 20; ++id) {
+                    if (!bypass.owns_device(id, is_mouse(id) != 0) &&
+                        !(pie.opened() && pie.owner() == static_cast<std::uintptr_t>(id)) && !chord.owns_device(id)) continue;
+                    std::array<wchar_t, 512> hardware{};
+                    if (session.api.get_hardware_id(session.context, id, hardware.data(),
+                        static_cast<unsigned int>(sizeof(hardware))) == 0) {
+                        if (is_mouse(id)) { bypass.remove_mouse(id); pie.remove_mouse(id, send_key); }
+                        else { bypass.remove_keyboard(id); pie.remove_keyboard(id, send_key); chord.remove_device(id, send_raw_key); }
+                    }
+                }
+                sync_bypass();
             }
             if (child && now >= game_check) {
                 game_check = now + milliseconds(4);
@@ -245,11 +309,12 @@ void run(const configuration& config, const game_command* game, input_priority p
                     break;
                 }
             }
-            if (enabled) axis.tick(now, output_keyboard, send_key);
+            tick(now);
             DWORD wait_ms = 4;
-            if (enabled) if (const auto due = axis.deadline()) {
-                wait_ms = wait_milliseconds(*due, clock_type::now(), 4);
-            }
+            if (const auto due = pie.deadline()) wait_ms = std::min(wait_ms, wait_milliseconds(*due, clock_type::now(), 4));
+            if (enabled && !bypass.held() && !pie.opened())
+                for (const auto due : {axis.deadline(), config.kernel_y_enabled ? vertical.deadline() : std::nullopt})
+                    if (due) wait_ms = std::min(wait_ms, wait_milliseconds(*due, clock_type::now(), 4));
             if (child) wait_ms = std::min(wait_ms, wait_milliseconds(game_check, clock_type::now(), 4));
             const auto device = session.api.wait_with_timeout(session.context, wait_ms);
             if (device == 0) continue;
@@ -263,13 +328,21 @@ void run(const configuration& config, const game_command* game, input_priority p
                     const bool simple = (stroke.state & ~(INTERCEPTION_KEY_UP | INTERCEPTION_KEY_E0)) == 0;
                     const auto code = static_cast<key_code>(stroke.code | ((stroke.state & INTERCEPTION_KEY_E0) ? 0xe000 : 0));
                     const bool down = (stroke.state & INTERCEPTION_KEY_UP) == 0;
-                    if (simple && code == config.toggle_key) {
+                    if (simple) { bypass.keyboard(device, code, down); sync_bypass(); }
+                    if (simple && pie.trigger_key(code)) {
+                        if (!pie.keyboard(device, code, down, enabled && !bypass.held(), now,
+                            output_keyboard, send_key, release_xy)) session.forward(device, stroke);
+                    } else if (simple && chord.trigger_key(code)) {
+                        session.forward(device, stroke);
+                        chord.trigger({device, code, down}, enabled && !bypass.held(), send_raw_key);
+                    } else if (simple && code == config.toggle_key) {
                         if (toggle.update(device, down)) {
-                            if (!enabled && (key_is_down(config.left_key) || key_is_down(config.right_key))) {
+                            if (!enabled && !bypass.held() && (key_is_down(config.left_key) || key_is_down(config.right_key)
+                                || (config.kernel_y_enabled && (key_is_down(config.up_key) || key_is_down(config.down_key))))) {
                                 std::cout << "OFF - release mapped physical keys, then press toggle again.\n" << std::flush;
                                 continue;
                             }
-                            axis.release(output_keyboard, send_key);
+                            release();
                             enabled = !enabled;
                             monitor.enabled(enabled);
                             if (enabled) output_keyboard = device;
@@ -278,33 +351,67 @@ void run(const configuration& config, const game_command* game, input_priority p
                                 SND_ALIAS | SND_ASYNC | SND_NODEFAULT | SND_SYSTEM);
                             std::cout << (enabled ? "ON\n" : "OFF\n") << std::flush;
                         }
-                    } else if (!simple || !axis.physical({device, code, down}, send_key)) {
+                    } else if (simple && pie.configured() &&
+                        std::find(pie_arrow_keys.begin(), pie_arrow_keys.end(), code) != pie_arrow_keys.end()) {
+                        if (enabled && !bypass.held()) pie.physical({device, code, down}, send_key);
+                        else {
+                            pie.physical({device, code, down}, [](key_event) {});
+                            if (chord.output_key(code)) send_key({device, code, down});
+                            else session.forward(device, stroke);
+                        }
+                    } else if (simple && bypass.keyboard_binding(code)) {
+                        axis.physical({device, code, down}, [](key_event) {});
+                        if (config.kernel_y_enabled) vertical.physical({device, code, down}, [](key_event) {});
                         session.forward(device, stroke);
+                    } else if (!simple || !(axis.physical({device, code, down}, send_key)
+                        || (config.kernel_y_enabled && vertical.physical({device, code, down}, send_key)))) {
+                        if (simple && chord.output_key(code)) send_key({device, code, down});
+                        else session.forward(device, stroke);
                     }
                 } else {
                     InterceptionMouseStroke stroke{};
                     std::memcpy(&stroke, buffer.data() + index * sizeof(stroke), sizeof(stroke));
+                    const bool was_bypassed = bypass.held();
+                    const bool bypass_down = bypass.mouse(device, stroke.state);
+                    const bool bypass_packet = was_bypassed || bypass_down || bypass.held();
+                    sync_bypass(bypass_packet);
                     if (monitor.recording())
                         monitor.motion(stroke.x, stroke.y, (stroke.flags & INTERCEPTION_MOUSE_MOVE_ABSOLUTE) != 0);
-                    if (enabled && !(stroke.flags & INTERCEPTION_MOUSE_MOVE_ABSOLUTE)) {
+                    const auto pie_packet = pie.packet(device, stroke.state, stroke.x, stroke.y,
+                        (stroke.flags & INTERCEPTION_MOUSE_MOVE_ABSOLUTE) != 0, enabled && !bypass_packet,
+                        now, output_keyboard, send_key, release_xy);
+                    stroke.state = pie_packet.buttons;
+                    if (pie_packet.owns_motion) {
+                        stroke.x = stroke.y = 0;
+                        // A zero absolute position is not a no-op: forward button-only
+                        // packets as zero relative movement instead.
+                        stroke.flags = static_cast<unsigned short>(stroke.flags &
+                            ~(INTERCEPTION_MOUSE_MOVE_ABSOLUTE | INTERCEPTION_MOUSE_VIRTUAL_DESKTOP));
+                    } else if (enabled && !bypass_packet && !(stroke.flags & INTERCEPTION_MOUSE_MOVE_ABSOLUTE)) {
                         axis.update(stroke.x, now, output_keyboard, send_key);
+                        if (config.kernel_y_enabled) vertical.update(stroke.y, now, output_keyboard, send_key);
                         stroke.x = 0;
+                        if (config.kernel_y_block) stroke.y = 0;
                     } else if (enabled && !absolute_warning && (stroke.flags & INTERCEPTION_MOUSE_MOVE_ABSOLUTE)) {
                         absolute_warning = true;
                         std::cout << "Absolute pointing device detected: passed through unchanged (unsupported).\n" << std::flush;
                     }
-                    session.forward(device, stroke);
+                    // Do not send an empty movement packet back through the driver.
+                    if (!pie_packet.owns_motion || stroke.state != 0 || stroke.information != 0 ||
+                        (stroke.flags & ~INTERCEPTION_MOUSE_MOVE_NOCOALESCE) != 0)
+                        session.forward(device, stroke);
+                    sync_bypass();
                 }
                 // Also tick under sustained traffic, where the wait never times out.
-                if (enabled) axis.tick(clock_type::now(), output_keyboard, send_key);
+                tick(clock_type::now());
             }
         }
     } catch (...) {
-        try { axis.release(output_keyboard, send_key); }
+        try { release(); }
         catch (const std::exception& error) { std::cerr << "Key cleanup failed: " << error.what() << '\n'; }
         throw;
     }
-    axis.release(output_keyboard, send_key);
+    release();
     std::cout << "OFF - mapping keys released.\n";
 }
 
