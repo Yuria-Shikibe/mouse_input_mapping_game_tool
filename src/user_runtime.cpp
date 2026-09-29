@@ -215,7 +215,7 @@ LRESULT CALLBACK keyboard_proc(int code, WPARAM wparam, LPARAM lparam) {
                 active->bypass.keyboard(0, key, down);
                 active->sync_bypass();
                 if (active->chord.trigger_key(key)) {
-                    active->chord.trigger({1, key, down}, active->mapping_active(), send_raw_key);
+                    active->chord.keyboard(1, key, down, active->mapping_active(), 1, send_raw_key);
                     return CallNextHookEx(nullptr, code, wparam, lparam);
                 }
                 if (key_bound(active->config.toggle_key) && key == active->config.toggle_key) {
@@ -247,6 +247,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             active->bypass.remove_keyboard(static_cast<std::uintptr_t>(lparam));
             active->pie.remove_mouse(static_cast<std::uintptr_t>(lparam), send_key);
             active->pie.remove_keyboard(static_cast<std::uintptr_t>(lparam), send_key);
+            active->chord.remove_device(static_cast<std::uintptr_t>(lparam), send_raw_key);
             if (active->mapping) active->mapping->remove_mouse(static_cast<std::uintptr_t>(lparam), send_key);
             active->sync_bypass();
         }
@@ -280,6 +281,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                 if (active->monitor.recording())
                     active->monitor.motion(mouse.lLastX, mouse.lLastY, (mouse.usFlags & MOUSE_MOVE_ABSOLUTE) != 0);
                 const auto now = clock_type::now();
+                active->chord.mouse(reinterpret_cast<std::uintptr_t>(input.header.hDevice), mouse.usButtonFlags,
+                    active->mapping != nullptr && !bypass_packet, 1, send_raw_key);
                 const auto pie_packet = active->pie.packet(reinterpret_cast<std::uintptr_t>(input.header.hDevice),
                     mouse.usButtonFlags, mouse.lLastX, mouse.lLastY, (mouse.usFlags & MOUSE_MOVE_ABSOLUTE) != 0,
                     active->mapping != nullptr && !bypass_packet, now, 1, send_key,
@@ -322,8 +325,8 @@ void run(const configuration& config, const game_command* game, input_priority p
         if (now >= maintenance) {
             state.monitor.heartbeat(now);
             state.bypass.refresh_initial();
-            if (state.chord.held() && !key_is_down(state.config.chord.trigger))
-                state.chord.remove_device(1, send_raw_key);
+            if (state.chord.held() && !(GetAsyncKeyState(binding_vk(state.config.chord.trigger)) & 0x8000))
+                state.chord.reset(send_raw_key);
             state.sync_bypass();
             state.pie.maintenance(send_key);
             if (state.mapping) state.mapping->observe(state.monitor.observer(false), state.monitor.observer(true));

@@ -23,4 +23,4 @@
 
 按 README 构建并通过 CPack 生成发布包。版本号统一修改根目录 `CMakeLists.txt`。
 发布完整 ZIP，保留 LICENSE、第三方声明、许可和用户态库源码，不打包个人配置。
-GitHub Actions 在推送和 PR 时构建 Release，并提供 Release ZIP 工件，不会自动发布 Release。
+GitHub Actions 在推送和 PR 时构建 Release，并提供单层 ZIP 工件（内含安装树，不嵌套 CPack ZIP），不会自动发布 Release。

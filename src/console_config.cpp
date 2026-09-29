@@ -131,6 +131,16 @@ configuration configure(configuration defaults, bool text_mode) {
             catch (const std::exception& error) { std::cout << error.what() << '\n'; }
         }
     };
+    auto ask_input_binding = [&](const char* label, input_binding current) {
+        for (;;) {
+            std::cout << label << " (key name / MOUSE_LEFT/RIGHT/MIDDLE/X1/X2 / NONE; Enter keeps "
+                << format_input_binding(current) << "): " << std::flush;
+            const auto answer = trim(read_setting());
+            if (answer.empty()) return current;
+            try { return parse_input_binding(answer); }
+            catch (const std::exception& error) { std::cout << error.what() << '\n'; }
+        }
+    };
     for (std::size_t i = 0; i < defaults.bypass_keys.size(); ++i) {
         for (;;) {
             std::cout << "Bypass key " << i + 1 << " (key name / MOUSE_LEFT/RIGHT/MIDDLE/X1/X2 / NONE; Enter keeps "
@@ -163,7 +173,7 @@ configuration configure(configuration defaults, bool text_mode) {
     }
     defaults.chord.enabled = ask_switch("One key to two keys enabled", defaults.chord.enabled);
     if (defaults.chord.enabled) {
-        defaults.chord.trigger = ask("Chord trigger (original input preserved)", defaults.chord.trigger);
+        defaults.chord.trigger = ask_input_binding("Chord trigger (original input preserved)", defaults.chord.trigger);
         defaults.chord.first = ask("Chord first output", defaults.chord.first);
         defaults.chord.second = ask("Chord second output", defaults.chord.second);
     }

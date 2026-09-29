@@ -6,6 +6,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <algorithm>
 #include <optional>
@@ -125,6 +126,82 @@ struct key_event {
     bool down;
 };
 
+// Combines output ownership from independent mapping sources.  Several mouse
+// actions may intentionally target one key; an UP from one action must not
+// release that key while another action still owns it.  State changes happen
+// only after the corresponding send succeeds so a later cleanup can retry.
+class key_ownership_merger {
+public:
+    static constexpr std::size_t source_count = 8;
+
+    template<class sink_type>
+    void send(std::size_t source, key_event event, sink_type&& sink) {
+        if (source >= source_count) throw std::runtime_error("Invalid key output source");
+        const auto owner = static_cast<std::uint16_t>(1u << source);
+        auto* entry = find(event.code);
+        if (!entry) {
+            if (!event.down) {
+                // Preserve a first observed physical release, such as a key
+                // adopted while a bypass key was held.
+                sink(event);
+                return;
+            }
+            entry = allocate(event.code);
+        }
+
+        const bool source_down = (entry->owners & owner) != 0;
+        const bool other_owner = (entry->owners & static_cast<std::uint16_t>(~owner)) != 0;
+        if (event.down) {
+            if (source_down) {
+                // Keep keyboard auto-repeat behaviour for physical keys.
+                sink(event);
+            } else if (entry->owners == 0) {
+                sink(event);
+                entry->owners |= owner;
+            } else {
+                entry->owners |= owner;
+            }
+            return;
+        }
+
+        if (!source_down) {
+            if (!other_owner) sink(event);
+            return;
+        }
+        if (other_owner) {
+            entry->owners &= static_cast<std::uint16_t>(~owner);
+            return;
+        }
+        sink(event);
+        entry->owners &= static_cast<std::uint16_t>(~owner);
+    }
+
+private:
+    struct entry {
+        key_code code = unbound_key;
+        std::uint16_t owners = 0;
+    };
+
+    entry* find(key_code code) noexcept {
+        for (auto& entry : entries_)
+            if (entry.code == code) return &entry;
+        return nullptr;
+    }
+    entry* allocate(key_code code) {
+        for (auto& entry : entries_) {
+            if (!key_bound(entry.code)) {
+                entry.code = code;
+                return &entry;
+            }
+        }
+        throw std::runtime_error("Too many mapped key outputs");
+    }
+
+    // X/Y directions, five mouse buttons and wheel use at most eight output
+    // sources and eleven distinct target keys.
+    std::array<entry, 11> entries_{};
+};
+
 // Reconcile physical ownership with mapping ownership. A failed send must not
 // change the recorded OS state, so cleanup can retry the outstanding transition.
 class key_router {
@@ -210,12 +287,21 @@ private:
     }
     template<class sink_type>
     void reconcile(sink_type&& send) {
+        if (same_output_key()) {
+            const bool physical = physically_down(0) || physically_down(1);
+            const bool blocked = keyboard_override_ && physical;
+            sync(0, physical || (!blocked && desired_ != direction::idle), send);
+            return;
+        }
         const std::array next{wanted(0), wanted(1)};
         // Always release stale ownership before pressing a replacement.
         for (int index = 0; index < 2; ++index)
             if (!next[index]) sync(index, false, send);
         for (int index = 0; index < 2; ++index)
             if (next[index]) sync(index, true, send);
+    }
+    bool same_output_key() const noexcept {
+        return key_bound(codes_[0]) && codes_[0] == codes_[1];
     }
     std::array<key_code, 2> codes_;
     std::array<std::uint16_t, 2> physical_{};

@@ -25,22 +25,28 @@ public:
 
     template<class Sink>
     void buttons(std::uintptr_t device, unsigned short flags, Sink&& send) {
-        if (user_) buttons_.update(device, flags, send);
+        if (user_) buttons_.update(device, flags, [&](std::size_t index, key_event event) {
+            outputs_.send(button_first_source + index, event, send);
+        });
     }
     template<class Sink>
     void wheel(std::uintptr_t device, std::int16_t delta, time_point now, Sink&& send) {
-        if (user_) wheel_.update(device, delta, now, send);
+        if (user_) wheel_.update(device, delta, now, [&](key_event event) {
+            outputs_.send(wheel_source, event, send);
+        });
     }
     template<class Sink>
     void remove_mouse(std::uintptr_t device, Sink&& send) {
         // Axis motion is merged across mice; dropping one device invalidates
         // both histories. Attempt every release even if a send fails.
         std::exception_ptr failure;
-        try { horizontal_.release(1, send); }
+        try { horizontal_.release(1, [&](key_event event) { outputs_.send(horizontal_source, event, send); }); }
         catch (...) { failure = std::current_exception(); }
-        try { vertical_.release(1, send); }
+        try { vertical_.release(1, [&](key_event event) { outputs_.send(vertical_source, event, send); }); }
         catch (...) { if (!failure) failure = std::current_exception(); }
-        try { buttons_.remove(device, send); }
+        try { buttons_.remove(device, [&](std::size_t index, key_event event) {
+            outputs_.send(button_first_source + index, event, send);
+        }); }
         catch (...) { if (!failure) failure = std::current_exception(); }
         wheel_.remove(device);
         if (failure) std::rethrow_exception(failure);
@@ -48,38 +54,45 @@ public:
 
     template<class Sink>
     void update(std::int32_t x, std::int32_t y, time_point now, Sink&& send) {
-        horizontal_.update(x, now, 1, send);
-        if (y_enabled_) vertical_.update(y, now, 1, send);
+        horizontal_.update(x, now, 1, [&](key_event event) { outputs_.send(horizontal_source, event, send); });
+        if (y_enabled_) vertical_.update(y, now, 1, [&](key_event event) { outputs_.send(vertical_source, event, send); });
     }
     template<class Sink>
     void tick(time_point now, Sink&& send, bool pause_xy = false) {
-        if (!pause_xy) horizontal_.tick(now, 1, send);
-        if (!pause_xy && y_enabled_) vertical_.tick(now, 1, send);
-        if (user_) wheel_.tick(now, send);
+        if (!pause_xy) horizontal_.tick(now, 1, [&](key_event event) { outputs_.send(horizontal_source, event, send); });
+        if (!pause_xy && y_enabled_) vertical_.tick(now, 1, [&](key_event event) { outputs_.send(vertical_source, event, send); });
+        if (user_) wheel_.tick(now, [&](key_event event) { outputs_.send(wheel_source, event, send); });
     }
     template<class Sink>
     void release_motion(Sink&& send) {
         std::exception_ptr failure;
-        try { horizontal_.release(1, send); } catch (...) { failure = std::current_exception(); }
-        try { vertical_.release(1, send); } catch (...) { if (!failure) failure = std::current_exception(); }
+        try { horizontal_.release(1, [&](key_event event) { outputs_.send(horizontal_source, event, send); }); }
+        catch (...) { failure = std::current_exception(); }
+        try { vertical_.release(1, [&](key_event event) { outputs_.send(vertical_source, event, send); }); }
+        catch (...) { if (!failure) failure = std::current_exception(); }
         if (failure) std::rethrow_exception(failure);
     }
     template<class Sink>
     bool physical(key_event event, Sink&& send) {
-        return horizontal_.physical(event, send) || (y_enabled_ && vertical_.physical(event, send))
-            || (user_ && (buttons_.physical(event, send) || wheel_.physical(event, send)));
+        return horizontal_.physical(event, [&](key_event output) { outputs_.send(horizontal_source, output, send); })
+            || (y_enabled_ && vertical_.physical(event, [&](key_event output) { outputs_.send(vertical_source, output, send); }))
+            || (user_ && (buttons_.physical(event, [&](std::size_t index, key_event output) {
+                    outputs_.send(button_first_source + index, output, send);
+                }) || wheel_.physical(event, [&](key_event output) { outputs_.send(wheel_source, output, send); })));
     }
     template<class Sink>
     void release(Sink&& send) {
         // Attempt both axes even if one output fails.
         std::exception_ptr failure;
-        try { horizontal_.release(1, send); }
+        try { horizontal_.release(1, [&](key_event event) { outputs_.send(horizontal_source, event, send); }); }
         catch (...) { failure = std::current_exception(); }
-        try { vertical_.release(1, send); }
+        try { vertical_.release(1, [&](key_event event) { outputs_.send(vertical_source, event, send); }); }
         catch (...) { if (!failure) failure = std::current_exception(); }
-        try { buttons_.release(send); }
+        try { buttons_.release([&](std::size_t index, key_event event) {
+            outputs_.send(button_first_source + index, event, send);
+        }); }
         catch (...) { if (!failure) failure = std::current_exception(); }
-        try { wheel_.release(send); }
+        try { wheel_.release([&](key_event event) { outputs_.send(wheel_source, event, send); }); }
         catch (...) { if (!failure) failure = std::current_exception(); }
         if (failure) std::rethrow_exception(failure);
     }
@@ -90,9 +103,14 @@ public:
         return earliest;
     }
 private:
+    static constexpr std::size_t horizontal_source = 0;
+    static constexpr std::size_t vertical_source = 1;
+    static constexpr std::size_t button_first_source = 2;
+    static constexpr std::size_t wheel_source = 7;
     axis_mapping horizontal_, vertical_;
     button_mapping buttons_;
     wheel_mapping wheel_;
+    key_ownership_merger outputs_;
     bool y_enabled_, user_;
 };
 } // namespace mouse_mapping
