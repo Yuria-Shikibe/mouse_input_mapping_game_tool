@@ -103,8 +103,7 @@ LRESULT CALLBACK form_proc(HWND window, UINT message, WPARAM wparam, LPARAM lpar
 
 constexpr wchar_t settings_form_class[] = L"MouseMappingSettingsForm";
 void register_settings_form() {
-    // STATIC uses CS_PARENTDC, which cannot be combined with WS_EX_COMPOSITED.
-    // Give the scrollable form its own class so child compositing is supported.
+    // Keep painting and scrolling local to a dedicated child window class.
     WNDCLASSEXW type{sizeof(type)};
     type.lpfnWndProc = DefWindowProcW;
     type.hInstance = GetModuleHandleW(nullptr);
@@ -134,7 +133,7 @@ struct panel_control {
 };
 class editor {
 public:
-    HWND window{}, backend{}, tabs{}, path_label{}, status{}, capture_label{}, cancel{}, clear_binding{}, dirty_label{}, form{};
+    HWND window{}, backend{}, tabs{}, path_label{}, status{}, capture_label{}, cancel{}, clear_binding{}, dirty_label{}, form{}, settings_canvas{};
     HWND explanation{}, command_label{}, command{}, output{}, tooltip{};
     HWND input_monitor{};
     HFONT font{};
@@ -146,6 +145,7 @@ public:
     key_code swallowed_key = 0;
     std::vector<panel_control> panels;
     int scroll_position = 0, wheel_remainder = 0;
+    int settings_content = 0, settings_viewport = 0;
     HBRUSH dirty_brush = CreateSolidBrush(RGB(255, 222, 150));
     config_document document;
     std::filesystem::path directory = executable_directory();
@@ -233,20 +233,26 @@ public:
         }
         dirty_label = control(WC_STATICW, L"", SS_LEFT | SS_CENTERIMAGE);
         register_settings_form();
-        form = control(settings_form_class, L"", WS_CLIPCHILDREN | WS_VSCROLL, 0, WS_EX_CONTROLPARENT | WS_EX_COMPOSITED);
+        // WS_EX_COMPOSITED repaints the complete child tree before presenting it.
+        // That is particularly costly here because the settings page has many
+        // native controls. The canvas below moves as one child instead.
+        form = control(settings_form_class, L"", WS_CLIPCHILDREN | WS_VSCROLL, 0, WS_EX_CONTROLPARENT);
         if (!SetWindowSubclass(form, form_proc, 1, reinterpret_cast<DWORD_PTR>(this))) throw std::runtime_error("Cannot initialize settings panel");
+        settings_canvas = control(settings_form_class, L"", WS_CLIPCHILDREN, 0, WS_EX_CONTROLPARENT, form);
+        if (!SetWindowSubclass(settings_canvas, form_proc, 1, reinterpret_cast<DWORD_PTR>(this)))
+            throw std::runtime_error("Cannot initialize settings canvas");
         fields.reserve(config_fields().size());
         for (std::size_t i = 0; i < config_fields().size(); ++i) {
             const auto& field = config_fields()[i];
             field_control row;
-            row.label = control(WC_STATICW, field.label, SS_LEFT | SS_NOTIFY, 0, 0, form);
+            row.label = control(WC_STATICW, field.label, SS_LEFT | SS_NOTIFY, 0, 0, settings_canvas);
             if (field.kind == field_kind::toggle)
-                row.input = control(WC_BUTTONW, L"启用", BS_AUTOCHECKBOX | BS_NOTIFY | WS_TABSTOP, edit_base + static_cast<int>(i), 0, form);
+                row.input = control(WC_BUTTONW, L"启用", BS_AUTOCHECKBOX | BS_NOTIFY | WS_TABSTOP, edit_base + static_cast<int>(i), 0, settings_canvas);
             else if (field.kind == field_kind::key || field.kind == field_kind::input || field.kind == field_kind::curve)
-                row.input = control(WC_BUTTONW, L"", BS_PUSHBUTTON | BS_NOTIFY | WS_TABSTOP, edit_base + static_cast<int>(i), 0, form);
+                row.input = control(WC_BUTTONW, L"", BS_PUSHBUTTON | BS_NOTIFY | WS_TABSTOP, edit_base + static_cast<int>(i), 0, settings_canvas);
             else {
                 row.input = control(WC_EDITW, L"", ES_AUTOHSCROLL | WS_TABSTOP,
-                    edit_base + static_cast<int>(i), WS_EX_CLIENTEDGE, form);
+                    edit_base + static_cast<int>(i), WS_EX_CLIENTEDGE, settings_canvas);
                 SendMessageW(row.input, EM_SETLIMITTEXT, 128, 0);
             }
             add_tooltip(row.label, field.tooltip);
@@ -286,13 +292,19 @@ public:
             if (name == specs[i].name) return i;
         throw std::runtime_error("Unknown layout field: " + name);
     }
+    void set_field(const std::string& name, const std::string& value) {
+        document.set(name, value);
+        if (name == "up_key") document.set("kernel_y_up_key", value);
+        else if (name == "down_key") document.set("kernel_y_down_key", value);
+    }
     void create_panel(settings_panel spec, int parent) {
         const auto index = panels.size();
         auto children = std::move(spec.children);
         panel_control panel{std::move(spec), {}, {}, parent};
+        panel.expanded = panel.spec.initially_expanded;
         for (const auto& name : panel.spec.fields) panel.fields.push_back(field_index(name));
         panel.header = control(WC_BUTTONW, L"", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP,
-            section_base + static_cast<int>(index), 0, form);
+            section_base + static_cast<int>(index), 0, settings_canvas);
         if (!panel.spec.toggle.empty())
             add_tooltip(panel.header, config_fields()[field_index(panel.spec.toggle)].tooltip);
         panels.push_back(std::move(panel));
@@ -311,6 +323,14 @@ public:
                 place(fields[index].label, 0, 0, 0, 0, false);
                 place(fields[index].input, 0, 0, 0, 0, false);
             }
+        }
+        // The shared Y binding controls both backends. Keep the kernel-specific
+        // storage fields out of the form, but mark them as deliberately owned.
+        for (const auto* name : {"kernel_y_up_key", "kernel_y_down_key"}) {
+            const auto index = field_index(name);
+            ++uses[index];
+            place(fields[index].label, 0, 0, 0, 0, false);
+            place(fields[index].input, 0, 0, 0, 0, false);
         }
         for (const auto count : uses)
             if (count != 1) throw std::runtime_error("Settings layout must contain every field exactly once");
@@ -364,23 +384,27 @@ public:
         for (std::size_t i = 0; i < panels.size(); ++i) {
             if (panels[i].parent == -1) content += panel_height(i) + 12;
         }
+        settings_content = content;
+        settings_viewport = viewport;
         scroll_position = std::clamp(scroll_position, 0, std::max(0, content - viewport));
         SCROLLINFO scroll{sizeof(scroll), SIF_RANGE | SIF_PAGE | SIF_POS};
         scroll.nMax = content - 1; scroll.nPage = static_cast<UINT>(viewport); scroll.nPos = scroll_position;
         SetScrollInfo(form, SB_VERT, &scroll, FALSE);
         RECT bounds{}; GetClientRect(form, &bounds);
         const int width = MulDiv(bounds.right, 96, static_cast<int>(dpi)) - 4;
-        int y = -scroll_position;
+        place(settings_canvas, 0, -scroll_position, width, std::max(viewport, content));
+        int y = 0;
         for (std::size_t i = 0; i < panels.size(); ++i) {
             if (panels[i].parent != -1) continue;
             place_panel(i, 0, y, width); y += panel_height(i) + 12;
         }
     }
-    void paint_settings(HDC dc) const {
-        RECT client{}; GetClientRect(form, &client);
+    void paint_settings(HWND target, HDC dc) const {
+        RECT client{}; GetClientRect(target, &client);
         // Borders are pixels, not overlapping child windows: WS_CLIPCHILDREN
         // must only exclude actual controls, never the empty area inside a panel.
         FillRect(dc, &client, GetSysColorBrush(COLOR_BTNFACE));
+        if (target != settings_canvas) return;
         for (const auto& panel : panels)
             if (!IsRectEmpty(&panel.bounds)) FrameRect(dc, &panel.bounds, GetSysColorBrush(COLOR_BTNSHADOW));
     }
@@ -457,7 +481,7 @@ public:
     }
     void instructions() {
         const wchar_t* text = nullptr;
-        if (page == 0) text = L"点击键位按钮后按下单键即可绑定；恢复键还支持鼠标五键和清除绑定。切换窗口取消录入。\n同色标题表示同类功能；点击功能标题启用 / 关闭并展开 / 收起，参数会保留。悬停参数查看说明。";
+        if (page == 0) text = L"点击键位按钮后按下单键即可绑定；恢复键还支持鼠标五键和清除绑定。切换窗口取消录入。\n点击“共享设置 / 内核态设置 / 用户态设置”可一并展开或收起该类全部设置。Y 轴按键会同时用于两个后端；其他 Y 参数保持独立。悬停参数查看说明。";
         else text = L"运行程序始终从 OFF 开始；GUI 关闭不影响独立终端。使用切换键启停映射，终端 Ctrl+C 退出。\nSteam 仅跟踪直接启动的游戏进程。驱动安装可能请求管理员权限并要求重启。";
         SetWindowTextW(explanation, text);
     }
@@ -573,7 +597,7 @@ public:
                 throw std::runtime_error("Pause / PrintScreen / Break are not supported");
             const auto captured = parse_key(format_key(code));
             const auto index = static_cast<std::size_t>(capture_index);
-            document.set(config_fields()[index].name, format_key(captured));
+            set_field(config_fields()[index].name, format_key(captured));
             swallowed_key = captured;
             stop_capture();
             title(); SetWindowTextW(command, L"");
@@ -593,13 +617,37 @@ public:
         else if (bounds.bottom > viewport.bottom)
             scroll_form(MulDiv(bounds.bottom - viewport.bottom, 96, static_cast<int>(dpi)) + 4);
     }
-    void scroll_form(int amount) {
-        if (page != 0) return;
-        scroll_position += amount;
-        RECT client{}; GetClientRect(form, &client);
-        layout_settings(MulDiv(client.bottom, 96, static_cast<int>(dpi)));
-        RedrawWindow(form, nullptr, nullptr,
-            RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
+    bool scroll_form(int amount) {
+        if (page != 0 || !amount) return false;
+        const auto previous = scroll_position;
+        const auto next = std::clamp(previous + amount, 0, std::max(0, settings_content - settings_viewport));
+        if (next == previous) return false;
+
+        scroll_position = next;
+        SCROLLINFO scroll{sizeof(scroll), SIF_POS};
+        scroll.nPos = scroll_position;
+        SetScrollInfo(form, SB_VERT, &scroll, TRUE);
+
+        // Every setting control is a child of this canvas, so scrolling moves
+        // one native window instead of re-laying out and repainting each row.
+        // Compute from the absolute position to keep fractional-DPI motion free
+        // of cumulative rounding drift.
+        SetWindowPos(settings_canvas, nullptr, 0, -px(scroll_position), 0, 0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        return true;
+    }
+    void scroll_wheel(int delta) {
+        UINT lines = 3;
+        SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
+        const auto step = lines == WHEEL_PAGESCROLL ? std::max(1, settings_viewport)
+            : std::max(1, static_cast<int>(lines) * 32);
+        // Precision touchpads often send deltas smaller than WHEEL_DELTA. Keep
+        // their fractional progress so every event can advance the form instead
+        // of waiting for a full wheel notch and then jumping.
+        wheel_remainder -= delta * step;
+        const auto amount = wheel_remainder / WHEEL_DELTA;
+        wheel_remainder %= WHEEL_DELTA;
+        if (amount && !scroll_form(amount)) wheel_remainder = 0;
     }
     void check_executable(const std::filesystem::path& executable) {
         if (!std::filesystem::is_regular_file(executable))
@@ -758,12 +806,12 @@ LRESULT CALLBACK form_proc(HWND window, UINT message, WPARAM wparam, LPARAM lpar
     case WM_PAINT: {
         PAINTSTRUCT paint{};
         const auto dc = BeginPaint(window, &paint);
-        app->paint_settings(dc);
+        app->paint_settings(window, dc);
         EndPaint(window, &paint);
         return 0;
     }
     case WM_PRINTCLIENT:
-        app->paint_settings(reinterpret_cast<HDC>(wparam)); return 0;
+        app->paint_settings(window, reinterpret_cast<HDC>(wparam)); return 0;
     case WM_DRAWITEM: case WM_COMMAND: case WM_CTLCOLORSTATIC: case WM_VSCROLL: case WM_MOUSEWHEEL:
         return SendMessageW(GetParent(window), message, wparam, lparam);
     default:
@@ -785,17 +833,17 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         case WM_DRAWITEM:
             if (app->draw_panel(*reinterpret_cast<DRAWITEMSTRUCT*>(lparam))) return TRUE;
             break;
-        case WM_CTLCOLORSTATIC:
+        case WM_CTLCOLORSTATIC: {
+            const auto dc = reinterpret_cast<HDC>(wparam);
             if (reinterpret_cast<HWND>(lparam) == app->dirty_label && (app->document.dirty || app->document.path.empty())) {
-                const auto dc = reinterpret_cast<HDC>(wparam);
-                SetTextColor(dc, RGB(112, 48, 0)); SetBkColor(dc, RGB(255, 222, 150));
+                SetTextColor(dc, RGB(112, 48, 0));
+                SetBkColor(dc, RGB(255, 222, 150));
                 return reinterpret_cast<LRESULT>(app->dirty_brush);
             }
             break;
+        }
         case WM_MOUSEWHEEL:
-            app->wheel_remainder += GET_WHEEL_DELTA_WPARAM(wparam);
-            app->scroll_form(-90 * (app->wheel_remainder / WHEEL_DELTA));
-            app->wheel_remainder %= WHEEL_DELTA;
+            app->scroll_wheel(GET_WHEEL_DELTA_WPARAM(wparam));
             return 0;
         case WM_VSCROLL: {
             SCROLLINFO scroll{sizeof(scroll), SIF_ALL}; GetScrollInfo(app->form, SB_VERT, &scroll);
@@ -810,6 +858,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             case SB_BOTTOM: next = scroll.nMax; break;
             default: return 0;
             }
+            app->wheel_remainder = 0;
             app->scroll_form(next - app->scroll_position); return 0;
         }
         case WM_COMMAND: app->action(LOWORD(wparam), HIWORD(wparam)); return 0;

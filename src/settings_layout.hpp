@@ -11,6 +11,7 @@ struct settings_panel {
     std::string toggle;
     std::vector<std::string> fields;
     std::vector<settings_panel> children;
+    bool initially_expanded = true;
 };
 
 inline settings_panel axis_panel(const wchar_t* title, const std::string& axis,
@@ -28,23 +29,29 @@ inline settings_panel axis_panel(const wchar_t* title, const std::string& axis,
 
 inline std::vector<settings_panel> settings_panels() {
     return {
-        {L"共享 · 开关与旁路", panel_color::general, {},
-            {"toggle_key", "bypass_key_1", "bypass_key_2"}, {}},
-        {L"共享 · 采样与时序", panel_color::general, {},
-            {"window_ms", "release_ms", "pulse_period_ms"}, {}},
-        axis_panel(L"共享 · X 轴映射", "x_", {"left_key", "right_key"}, panel_color::x_axis),
-        axis_panel(L"用户态 · Y 轴映射", "y_", {"up_key", "down_key"}, panel_color::y_axis),
-        axis_panel(L"内核态 · Y 轴映射", "kernel_y_",
-            {"kernel_y_up_key", "kernel_y_down_key"}, panel_color::y_axis, "kernel_y_enabled"),
-        {L"内核态 · 原始 Y 输入阻断（独立开关）", panel_color::y_axis, {}, {"kernel_y_block"}, {}},
-        {L"用户态 · 鼠标五键", panel_color::buttons, {},
-            {"lmb_key", "rmb_key", "cmb_key", "x1_key", "x2_key"}, {}},
-        {L"用户态 · 滚轮映射", panel_color::buttons, {}, {"wheel_up_key", "wheel_down_key"}, {}},
-        {L"共享 · 一键双键", panel_color::buttons, "chord_enabled",
-            {"chord_trigger_key", "chord_first_key", "chord_second_key"}, {}},
-        {L"共享 · Pie 方向菜单", panel_color::pie, {}, {"pie_trigger", "pie_visual_enabled"}, {
-            {L"选区与输出", panel_color::pie, {},
-                {"pie_deadzone_counts", "pie_radius_counts", "pie_hysteresis_degrees", "pie_key_hold_ms"}, {}}
+        {L"共享设置", panel_color::general, {}, {}, {
+            {L"开关与旁路", panel_color::general, {},
+                {"toggle_key", "bypass_key_1", "bypass_key_2"}, {}},
+            {L"采样与时序", panel_color::general, {},
+                {"window_ms", "release_ms", "pulse_period_ms"}, {}},
+            axis_panel(L"X 轴映射", "x_", {"left_key", "right_key"}, panel_color::x_axis),
+            {L"Y 轴按键（用户态 + 内核态共用）", panel_color::y_axis, {}, {"up_key", "down_key"}, {}},
+            {L"一键双键", panel_color::buttons, "chord_enabled",
+                {"chord_trigger_key", "chord_first_key", "chord_second_key"}, {}},
+            {L"Pie 方向菜单", panel_color::pie, {}, {"pie_trigger", "pie_visual_enabled"}, {
+                {L"选区与输出", panel_color::pie, {},
+                    {"pie_deadzone_counts", "pie_radius_counts", "pie_hysteresis_degrees", "pie_key_hold_ms"}, {}}
+            }}
+        }},
+        {L"内核态设置", panel_color::y_axis, {}, {}, {
+            axis_panel(L"Y 轴映射", "kernel_y_", {}, panel_color::y_axis, "kernel_y_enabled"),
+            {L"原始 Y 输入阻断（独立开关）", panel_color::y_axis, {}, {"kernel_y_block"}, {}}
+        }, false},
+        {L"用户态设置", panel_color::y_axis, {}, {}, {
+            axis_panel(L"Y 轴映射", "y_", {}, panel_color::y_axis),
+            {L"鼠标五键", panel_color::buttons, {},
+                {"lmb_key", "rmb_key", "cmb_key", "x1_key", "x2_key"}, {}},
+            {L"滚轮映射", panel_color::buttons, {}, {"wheel_up_key", "wheel_down_key"}, {}}
         }}
     };
 }
