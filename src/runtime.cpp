@@ -100,6 +100,7 @@ public:
     }
 
     void send_key(key_event event) {
+        if (!key_bound(event.code)) return;
         InterceptionKeyStroke stroke{};
         stroke.code = event.code & 0xff;
         stroke.state = static_cast<unsigned short>((event.down ? INTERCEPTION_KEY_DOWN : INTERCEPTION_KEY_UP)
@@ -172,6 +173,7 @@ private:
 };
 
 bool key_is_down(key_code code) {
+    if (!key_bound(code)) return false;
     const auto vk = MapVirtualKeyW(code, MAPVK_VSC_TO_VK_EX);
     return (GetAsyncKeyState(static_cast<int>(vk)) & 0x8000) != 0;
 }
@@ -335,7 +337,7 @@ void run(const configuration& source, const game_command* game, input_priority p
                     } else if (simple && chord.trigger_key(code)) {
                         session.forward(device, stroke);
                         chord.trigger({device, code, down}, enabled && !bypass.held(), send_raw_key);
-                    } else if (simple && code == config.toggle_key) {
+                    } else if (simple && key_bound(config.toggle_key) && code == config.toggle_key) {
                         if (toggle.update(device, down)) {
                             if (!enabled && !bypass.held() && (key_is_down(config.left_key) || key_is_down(config.right_key)
                                 || (config.kernel_y_enabled && (key_is_down(config.up_key) || key_is_down(config.down_key))))) {

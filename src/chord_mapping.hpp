@@ -9,8 +9,11 @@ class chord_mapping {
 public:
     explicit chord_mapping(chord_settings settings) : settings_(settings),
         first_(settings.first, 0), second_(settings.second, 0) {}
-    bool trigger_key(key_code code) const { return settings_.enabled && code == settings_.trigger; }
-    bool output_key(key_code code) const { return settings_.enabled && (code == settings_.first || code == settings_.second); }
+    bool trigger_key(key_code code) const { return settings_.enabled && key_bound(settings_.trigger) && code == settings_.trigger; }
+    bool output_key(key_code code) const {
+        return settings_.enabled && ((key_bound(settings_.first) && code == settings_.first)
+            || (key_bound(settings_.second) && code == settings_.second));
+    }
     void seed(key_code code) { first_.seed_physical(code); second_.seed_physical(code); }
     template<class Sink> void output(key_event event, Sink&& send) {
         if (!settings_.enabled || !(first_.physical(event, send) || second_.physical(event, send))) send(event);

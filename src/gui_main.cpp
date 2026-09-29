@@ -114,6 +114,7 @@ void register_settings_form() {
 }
 
 std::wstring binding_name(key_code code) {
+    if (!key_bound(code)) return L"未绑定";
     const auto name = key_name(code);
     if (name != "SCAN_CODE") return wide(name);
     wchar_t text[128]{};
@@ -458,7 +459,8 @@ public:
         place(output, 30, 410, width - 60, std::max(60, height - 524), page == 1);
         place(capture_label, 20, height - 84, width - 280, 32, capture_index >= 0);
         place(clear_binding, width - 240, height - 86, 104, 28,
-            capture_index >= 0 && config_fields()[static_cast<std::size_t>(capture_index)].kind == field_kind::input);
+            capture_index >= 0 && (config_fields()[static_cast<std::size_t>(capture_index)].kind == field_kind::key
+                || config_fields()[static_cast<std::size_t>(capture_index)].kind == field_kind::input));
         place(cancel, width - 124, height - 86, 104, 28, capture_index >= 0);
         place(status, 20, height - 48, width - 40, 42);
         // WS_CLIPCHILDREN on the main window excludes the controls from its
@@ -593,10 +595,19 @@ public:
         if (capture_index < 0) return false;
         if (up || (message.lParam & (1LL << 30))) return true;
         try {
+            const auto index = static_cast<std::size_t>(capture_index);
+            if (message.wParam == VK_ESCAPE) {
+                set_field(config_fields()[index].name, "NONE");
+                swallowed_key = code;
+                stop_capture();
+                title(); SetWindowTextW(command, L"");
+                set_status(L"已清除绑定。点击保存后，下次启动运行程序生效。");
+                SetFocus(fields[index].input);
+                return true;
+            }
             if (message.wParam == VK_PAUSE || message.wParam == VK_SNAPSHOT || message.wParam == VK_CANCEL)
                 throw std::runtime_error("Pause / PrintScreen / Break are not supported");
             const auto captured = parse_key(format_key(code));
-            const auto index = static_cast<std::size_t>(capture_index);
             set_field(config_fields()[index].name, format_key(captured));
             swallowed_key = captured;
             stop_capture();
@@ -675,7 +686,8 @@ public:
                 capture_index = static_cast<int>(index);
                 SetWindowTextW(fields[index].input, L"请按键…");
                 SetWindowTextW(capture_label, field.kind == field_kind::input
-                    ? L"按键盘或鼠标键绑定；也可清除绑定。" : L"按下单个目标键立即绑定；点击取消或切换窗口可退出录入。");
+                    ? L"按键盘或鼠标键绑定；按 Esc 或点击清除绑定可取消绑定。"
+                    : L"按下单个目标键立即绑定；按 Esc 或点击清除绑定可取消绑定。");
                 layout(); SetFocus(window); return;
             }
             if (field.kind == field_kind::toggle && notification == BN_CLICKED)
@@ -704,7 +716,7 @@ public:
         }
         if (id == cancel_id) { stop_capture(); return; }
         if (id == clear_binding_id && capture_index >= 0) {
-            document.set(config_fields()[static_cast<std::size_t>(capture_index)].name, "NONE");
+            set_field(config_fields()[static_cast<std::size_t>(capture_index)].name, "NONE");
             stop_capture(); title(); SetWindowTextW(command, L""); return;
         }
         if (id == backend_id && notification == CBN_SELCHANGE) {

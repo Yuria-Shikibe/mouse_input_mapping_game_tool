@@ -29,6 +29,7 @@ void request_stop() noexcept {
 }
 
 void send_raw_key(key_event event) {
+    if (!key_bound(event.code)) return;
     INPUT input{};
     input.type = INPUT_KEYBOARD;
     input.ki.wScan = event.code & 0xff;
@@ -36,6 +37,11 @@ void send_raw_key(key_event event) {
         | ((event.code & 0xff00) == 0xe000 ? KEYEVENTF_EXTENDEDKEY : 0);
     if (SendInput(1, &input, sizeof(input)) != 1)
         fail("SendInput failed (check target integrity level / game input restrictions)");
+}
+
+bool key_is_down(key_code code) {
+    return key_bound(code)
+        && (GetAsyncKeyState(static_cast<int>(MapVirtualKeyW(code, MAPVK_VSC_TO_VK_EX))) & 0x8000) != 0;
 }
 
 chord_mapping* output_chord = nullptr;
@@ -96,7 +102,7 @@ public:
         active = this;
         output_chord = &chord;
         if (config.chord.enabled) for (const auto key : {config.chord.first, config.chord.second})
-            if (GetAsyncKeyState(static_cast<int>(MapVirtualKeyW(key, MAPVK_VSC_TO_VK_EX))) & 0x8000) chord.seed(key);
+            if (key_is_down(key)) chord.seed(key);
         stopping = false;
         done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         if (!done) fail("Cannot create shutdown event");
@@ -143,7 +149,7 @@ public:
                 config.mouse_keys[0], config.mouse_keys[1], config.mouse_keys[2], config.mouse_keys[3], config.mouse_keys[4],
                 config.wheel_keys[0], config.wheel_keys[1]};
             for (const auto key : keys)
-                if (!bypass.held() && (GetAsyncKeyState(static_cast<int>(MapVirtualKeyW(key, MAPVK_VSC_TO_VK_EX))) & 0x8000)) {
+                if (!bypass.held() && key_is_down(key)) {
                     std::cout << "OFF - release all mapped keyboard keys before enabling.\n" << std::flush;
                     return;
                 }
@@ -156,7 +162,7 @@ public:
             mapping->observe(monitor.observer(false), monitor.observer(true));
             // Seed physical owners when enabling while a bypass key is held.
             if (bypass.held()) for (const auto key : keys)
-                if (GetAsyncKeyState(static_cast<int>(MapVirtualKeyW(key, MAPVK_VSC_TO_VK_EX))) & 0x8000)
+                if (key_is_down(key))
                     mapping->physical({1, key, true}, [](key_event) {});
         }
         monitor.enabled(mapping != nullptr);
@@ -212,7 +218,7 @@ LRESULT CALLBACK keyboard_proc(int code, WPARAM wparam, LPARAM lparam) {
                     active->chord.trigger({1, key, down}, active->mapping_active(), send_raw_key);
                     return CallNextHookEx(nullptr, code, wparam, lparam);
                 }
-                if (key == active->config.toggle_key) {
+                if (key_bound(active->config.toggle_key) && key == active->config.toggle_key) {
                     if (active->latch.update(1, down)) active->toggle();
                     return 1;
                 }
@@ -316,8 +322,7 @@ void run(const configuration& config, const game_command* game, input_priority p
         if (now >= maintenance) {
             state.monitor.heartbeat(now);
             state.bypass.refresh_initial();
-            if (state.chord.held() && !(GetAsyncKeyState(static_cast<int>(
-                MapVirtualKeyW(state.config.chord.trigger, MAPVK_VSC_TO_VK_EX))) & 0x8000))
+            if (state.chord.held() && !key_is_down(state.config.chord.trigger))
                 state.chord.remove_device(1, send_raw_key);
             state.sync_bypass();
             state.pie.maintenance(send_key);

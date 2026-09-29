@@ -30,7 +30,7 @@ public:
     template<class Sink>
     bool physical(key_event event, Sink&& send) {
         for (std::size_t index = 0; index < codes_.size(); ++index) {
-            if (event.code != codes_[index]) continue;
+            if (!key_bound(codes_[index]) || event.code != codes_[index]) continue;
             const bool repeat = physical_[index] && event.down;
             const bool previous = output_[index];
             physical_[index] = event.down;
@@ -57,6 +57,7 @@ private:
     }
     template<class Sink>
     void sync(std::size_t index, Sink&& send) {
+        if (!key_bound(codes_[index])) return;
         bool wanted = physical_[index];
         for (const auto& entry : mice_) wanted = wanted || entry.second[index];
         if (wanted == output_[index]) return;

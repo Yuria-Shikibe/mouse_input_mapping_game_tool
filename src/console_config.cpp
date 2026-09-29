@@ -24,10 +24,10 @@ configuration configure(configuration defaults, bool text_mode) {
                 & ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_QUICK_EDIT_MODE | ENABLE_VIRTUAL_TERMINAL_INPUT)))
             throw std::runtime_error("Cannot enable direct console key capture");
         std::cout << "Press the target key (including F1-F24), then Enter to confirm.\n"
-                     "Press another key to change the selection. Enter keeps the displayed key.\n"
+                     "Press another key to change the selection. Esc selects NONE; Enter keeps the displayed key.\n"
                      "To bind Enter itself, use --configure-text and type ENTER.\n";
     } else {
-        std::cout << "Text input mode (IDE/redirected terminal): type a key NAME such as A, LEFT, F8.\n"
+        std::cout << "Text input mode (IDE/redirected terminal): type a key NAME such as A, LEFT, F8, or NONE.\n"
                      "Press Enter to display it, then Enter again to confirm.\n"
                      "Do not press function keys here; type their names, e.g. F8.\n";
     }
@@ -47,12 +47,16 @@ configuration configure(configuration defaults, bool text_mode) {
                     confirmed = enter_down; // Consume release/repeats before advancing to the next binding.
                 } else {
                     if (!key.bKeyDown || enter_down) continue;
-                    const auto code = static_cast<key_code>(key.wVirtualScanCode | ((key.dwControlKeyState & ENHANCED_KEY) ? 0xe000 : 0));
-                    if (key.wVirtualKeyCode == VK_PAUSE || key.wVirtualKeyCode == VK_SNAPSHOT || !supported_key(code)) {
-                        std::cout << "Unsupported key; choose another.\n" << std::flush;
-                        continue;
+                    if (key.wVirtualKeyCode == VK_ESCAPE) {
+                        value = unbound_key;
+                    } else {
+                        const auto code = static_cast<key_code>(key.wVirtualScanCode | ((key.dwControlKeyState & ENHANCED_KEY) ? 0xe000 : 0));
+                        if (key.wVirtualKeyCode == VK_PAUSE || key.wVirtualKeyCode == VK_SNAPSHOT || !supported_key(code)) {
+                            std::cout << "Unsupported key; choose another.\n" << std::flush;
+                            continue;
+                        }
+                        value = code;
                     }
-                    value = code;
                 }
             } else {
                 std::cout << "Key name / Enter to confirm: " << std::flush;

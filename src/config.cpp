@@ -100,6 +100,7 @@ key_code parse_key(std::string_view text) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
         return static_cast<char>(std::toupper(c));
     });
+    if (value == "NONE") return unbound_key;
     unsigned int code = 0;
     if (value.starts_with("0X")) {
         const auto [end, error] = std::from_chars(value.data() + 2, value.data() + value.size(), code, 16);
@@ -125,10 +126,12 @@ key_code parse_key(std::string_view text) {
 }
 
 std::string format_key(key_code code) {
+    if (!key_bound(code)) return "NONE";
     return std::format("0x{:04x}", code);
 }
 
 std::string key_name(key_code code) {
+    if (!key_bound(code)) return "NONE";
     for (unsigned int vk = 'A'; vk <= 'Z'; ++vk)
         if (scan_code_for_vk(vk) == code) return std::string(1, static_cast<char>(vk));
     for (unsigned int vk = '0'; vk <= '9'; ++vk)
@@ -144,7 +147,9 @@ std::string key_name(key_code code) {
     return "SCAN_CODE";
 }
 
-std::string describe_key(key_code code) { return std::format("{} ({})", key_name(code), format_key(code)); }
+std::string describe_key(key_code code) {
+    return key_bound(code) ? std::format("{} ({})", key_name(code), format_key(code)) : "NONE";
+}
 
 static constexpr std::array mouse_binding_names{"MOUSE_LEFT", "MOUSE_RIGHT", "MOUSE_MIDDLE", "MOUSE_X1", "MOUSE_X2"};
 static constexpr std::array mouse_binding_aliases{"LMB", "RMB", "CMB", "X1", "X2"};
@@ -164,24 +169,48 @@ std::string format_input_binding(input_binding binding) {
     throw std::runtime_error("Invalid input binding");
 }
 
+bool supported_or_unbound(key_code code) {
+    return !key_bound(code) || supported_key(code);
+}
+
+bool same_bound_key(key_code first, key_code second) {
+    return key_bound(first) && key_bound(second) && first == second;
+}
+
+template<class Range>
+bool unique_bound_keys(const Range& keys) {
+    std::set<key_code> seen;
+    for (const auto key : keys)
+        if (key_bound(key) && !seen.insert(key).second) return false;
+    return true;
+}
+
+bool unique_bound_keys(std::initializer_list<key_code> keys) {
+    std::set<key_code> seen;
+    for (const auto key : keys)
+        if (key_bound(key) && !seen.insert(key).second) return false;
+    return true;
+}
+
 void validate(const configuration& config) {
     const auto& chord = config.chord;
     for (const auto key : {chord.trigger, chord.first, chord.second})
-        if (!supported_key(key)) throw std::runtime_error("Invalid chord scan code");
+        if (!supported_or_unbound(key)) throw std::runtime_error("Invalid chord scan code");
     if (chord.enabled) {
-        if (chord.trigger == chord.first || chord.trigger == chord.second || chord.first == chord.second)
+        if (!unique_bound_keys({chord.trigger, chord.first, chord.second}))
             throw std::runtime_error("Chord trigger and output keys must be different");
         for (const auto key : {chord.trigger, chord.first, chord.second}) {
-            if (key == config.toggle_key) throw std::runtime_error("Chord keys conflict with toggle_key");
+            if (same_bound_key(key, config.toggle_key)) throw std::runtime_error("Chord keys conflict with toggle_key");
             for (const auto binding : config.bypass_keys)
-                if (binding == input_binding{input_kind::keyboard, key})
+                if (key_bound(key) && binding == input_binding{input_kind::keyboard, key})
                     throw std::runtime_error("Chord keys conflict with bypass keys");
         }
-        if (chord.trigger == config.left_key || chord.trigger == config.right_key ||
-            (y_enabled(config) && (chord.trigger == effective_config(config).up_key || chord.trigger == effective_config(config).down_key)))
+        if (same_bound_key(chord.trigger, config.left_key) || same_bound_key(chord.trigger, config.right_key) ||
+            (y_enabled(config) && (same_bound_key(chord.trigger, effective_config(config).up_key)
+                || same_bound_key(chord.trigger, effective_config(config).down_key))))
             throw std::runtime_error("Chord trigger conflicts with an axis key");
         if (config.pie.trigger.kind != input_kind::none &&
-            std::find(pie_arrow_keys.begin(), pie_arrow_keys.end(), chord.trigger) != pie_arrow_keys.end())
+            key_bound(chord.trigger) && std::find(pie_arrow_keys.begin(), pie_arrow_keys.end(), chord.trigger) != pie_arrow_keys.end())
             throw std::runtime_error("Chord trigger conflicts with Pie arrow keys");
     }
     const auto& pie = config.pie;
@@ -202,14 +231,15 @@ void validate(const configuration& config) {
         if (pie.trigger.kind == input_kind::keyboard) {
             const auto key = pie.trigger.code;
             const auto effective = effective_config(config);
-            bool trigger_conflict = reserved(key) || key == config.toggle_key ||
-                key == config.left_key || key == config.right_key ||
-                (y_enabled(config) && (key == effective.up_key || key == effective.down_key));
+            bool trigger_conflict = reserved(key) || same_bound_key(key, config.toggle_key) ||
+                same_bound_key(key, config.left_key) || same_bound_key(key, config.right_key) ||
+                (y_enabled(config) && (same_bound_key(key, effective.up_key) || same_bound_key(key, effective.down_key)));
             if (config.map_y) {
-                for (const auto mapped : config.mouse_keys) trigger_conflict = trigger_conflict || mapped == key;
-                for (const auto mapped : config.wheel_keys) trigger_conflict = trigger_conflict || mapped == key;
+                for (const auto mapped : config.mouse_keys) trigger_conflict = trigger_conflict || same_bound_key(mapped, key);
+                for (const auto mapped : config.wheel_keys) trigger_conflict = trigger_conflict || same_bound_key(mapped, key);
             }
-            if (chord.enabled) trigger_conflict = trigger_conflict || key == chord.trigger || key == chord.first || key == chord.second;
+            if (chord.enabled) trigger_conflict = trigger_conflict || same_bound_key(key, chord.trigger)
+                || same_bound_key(key, chord.first) || same_bound_key(key, chord.second);
             if (trigger_conflict) throw std::runtime_error("Pie keyboard trigger conflicts with toggle, mapped output, chord or arrow keys");
         }
         bool conflict = reserved(config.toggle_key) || reserved(config.left_key) || reserved(config.right_key);
@@ -226,17 +256,17 @@ void validate(const configuration& config) {
         if (conflict) throw std::runtime_error("Pie reserves UP/DOWN/LEFT/RIGHT; remove conflicting mappings, toggle or bypass keys");
     }
     for (const auto binding : config.bypass_keys) {
-        if ((binding.kind == input_kind::keyboard && (!supported_key(binding.code) || binding.code == config.toggle_key))
+        if ((binding.kind == input_kind::keyboard && (!supported_key(binding.code) || same_bound_key(binding.code, config.toggle_key)))
             || (binding.kind == input_kind::mouse && binding.code > 4))
             throw std::runtime_error("Invalid bypass key or conflict with toggle_key");
     }
     if (config.bypass_keys[0].kind != input_kind::none && config.bypass_keys[0] == config.bypass_keys[1])
         throw std::runtime_error("Bypass keys must be different");
     const auto& ky = config.kernel_y;
-    if (!supported_key(ky.up_key) || !supported_key(ky.down_key)) throw std::runtime_error("Invalid kernel Y keys");
+    if (!supported_or_unbound(ky.up_key) || !supported_or_unbound(ky.down_key)) throw std::runtime_error("Invalid kernel Y keys");
     if (!config.map_y && config.kernel_y_enabled) {
-        const std::set<key_code> keys{config.left_key, config.right_key, config.toggle_key, ky.up_key, ky.down_key};
-        if (keys.size() != 5) throw std::runtime_error("Kernel direction and toggle keys must be different");
+        if (!unique_bound_keys({config.left_key, config.right_key, config.toggle_key, ky.up_key, ky.down_key}))
+            throw std::runtime_error("Kernel direction and toggle keys must be different");
     }
     if (ky.start_counts < 1 || ky.reverse_counts < ky.start_counts || ky.reverse_counts > 10000
         || !std::isfinite(ky.smoothing_factor) || ky.smoothing_factor < 0 || ky.smoothing_factor > 1
@@ -246,21 +276,23 @@ void validate(const configuration& config) {
     validate_curve(ky.curve.points);
     for (const auto& [name, code] : {std::pair{"left_key", config.left_key},
             {"right_key", config.right_key}, {"toggle_key", config.toggle_key}})
-        if (!supported_key(code)) throw std::runtime_error(std::format("{}: unsupported scan code", name));
-    if (config.left_key == config.right_key || config.left_key == config.toggle_key || config.right_key == config.toggle_key)
+        if (!supported_or_unbound(code)) throw std::runtime_error(std::format("{}: unsupported scan code", name));
+    if (!unique_bound_keys({config.left_key, config.right_key, config.toggle_key}))
         throw std::runtime_error("left_key, right_key and toggle_key must be different");
     if (config.map_y) {
-        if (!supported_key(config.up_key) || !supported_key(config.down_key))
+        if (!supported_or_unbound(config.up_key) || !supported_or_unbound(config.down_key))
             throw std::runtime_error("up_key/down_key: unsupported scan code");
-        std::set<key_code> keys{config.left_key, config.right_key, config.up_key, config.down_key, config.toggle_key};
+        std::array<key_code, 10> mapping_keys{config.left_key, config.right_key, config.up_key, config.down_key, config.toggle_key};
         for (const auto code : config.mouse_keys) {
-            if (!supported_key(code)) throw std::runtime_error("Mouse button binding: unsupported scan code");
-            keys.insert(code);
+            if (!supported_or_unbound(code)) throw std::runtime_error("Mouse button binding: unsupported scan code");
         }
-        if (keys.size() != 10) throw std::runtime_error("Direction, mouse button and toggle keys must be different");
+        std::copy(config.mouse_keys.begin(), config.mouse_keys.end(), mapping_keys.begin() + 5);
+        if (!unique_bound_keys(mapping_keys)) throw std::runtime_error("Direction, mouse button and toggle keys must be different");
+        std::set<key_code> used;
+        for (const auto code : mapping_keys) if (key_bound(code)) used.insert(code);
         for (const auto code : config.wheel_keys) {
-            if (!supported_key(code)) throw std::runtime_error("Mouse wheel binding: unsupported scan code");
-            if (keys.contains(code)) throw std::runtime_error("Wheel keys must differ from direction, mouse button and toggle keys");
+            if (!supported_or_unbound(code)) throw std::runtime_error("Mouse wheel binding: unsupported scan code");
+            if (key_bound(code) && used.contains(code)) throw std::runtime_error("Wheel keys must differ from direction, mouse button and toggle keys");
         }
     }
     for (const bool y : {false, true}) {
@@ -410,7 +442,7 @@ configuration load_config(const std::filesystem::path& path, bool map_y, bool re
 
 void write_config(std::ostream& output, const configuration& config) {
     validate(config);
-    output << "; Keys are physical scan codes; 0xe0xx means an extended key. Key names are also accepted.\n"
+    output << "; Keys are physical scan codes; 0xe0xx means an extended key. Key names and NONE are also accepted.\n"
         << "[mapping]\nleft_key=" << format_key(config.left_key) << " ; " << key_name(config.left_key)
         << "\nright_key=" << format_key(config.right_key) << " ; " << key_name(config.right_key);
     output << "\nchord_enabled=" << config.chord.enabled

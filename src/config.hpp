@@ -12,7 +12,7 @@ enum class input_kind { none, keyboard, mouse };
 struct input_binding {
     input_kind kind = input_kind::none;
     key_code code = 0; // Keyboard scan code, or mouse button index 0..4.
-    bool operator==(const input_binding&) const = default;
+    bool operator==(const input_binding&) const noexcept = default;
 };
 struct y_settings {
     key_code up_key = 0x1f, down_key = 0x11;

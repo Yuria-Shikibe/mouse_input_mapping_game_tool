@@ -8,18 +8,18 @@ namespace mouse_mapping {
 class wheel_mapping {
 public:
     explicit wheel_mapping(key_code up, key_code down)
-        : router_(up, down), same_key_(up == down) {}
+        : router_(up, down), up_bound_(key_bound(up)), down_bound_(key_bound(down)), same_key_(up == down) {}
 
     template<class Sink>
     void update(std::uintptr_t device, std::int16_t delta, time_point now, Sink&& send) {
         auto& remainder = remainders_[device];
         remainder += delta;
         while (remainder >= wheel_delta) {
-            enqueue(direction::left);
+            if (up_bound_) enqueue(direction::left);
             remainder -= wheel_delta;
         }
         while (remainder <= -wheel_delta) {
-            enqueue(same_key_ ? direction::left : direction::right);
+            if (down_bound_) enqueue(same_key_ ? direction::left : direction::right);
             remainder += wheel_delta;
         }
         tick(now, send);
@@ -75,6 +75,7 @@ private:
     }
 
     key_router router_;
+    const bool up_bound_, down_bound_;
     const bool same_key_;
     device_table<int> remainders_;
     std::array<direction, maximum_pending> pending_{};

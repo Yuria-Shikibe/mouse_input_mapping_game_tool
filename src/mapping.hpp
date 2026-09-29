@@ -14,6 +14,8 @@
 namespace mouse_mapping {
 
 using key_code = std::uint16_t; // Scan code, with 0xe000 for an E0 prefix.
+inline constexpr key_code unbound_key = 0;
+constexpr bool key_bound(key_code code) noexcept { return code != unbound_key; }
 using clock_type = std::chrono::steady_clock;
 using time_point = clock_type::time_point;
 using milliseconds = std::chrono::milliseconds;
@@ -132,7 +134,7 @@ public:
 
     // Adopt a key held before input interception began, without injecting a duplicate.
     void seed_physical(key_code code) {
-        const int index = code == codes_[0] ? 0 : code == codes_[1] ? 1 : -1;
+        const int index = index_for(code);
         if (index < 0) return;
         initial_physical_[index] = true;
         output_down_[index] = true;
@@ -141,7 +143,7 @@ public:
     template<class sink_type>
     bool physical(key_event event, sink_type&& send) {
         if (event.device < 1 || event.device > 10) return false;
-        const int index = event.code == codes_[0] ? 0 : event.code == codes_[1] ? 1 : -1;
+        const int index = index_for(event.code);
         if (index < 0) return false;
         if (initial_physical_[index]) {
             initial_physical_[index] = false;
@@ -177,6 +179,11 @@ public:
     }
 
 private:
+    int index_for(key_code code) const noexcept {
+        if (key_bound(codes_[0]) && code == codes_[0]) return 0;
+        if (key_bound(codes_[1]) && code == codes_[1]) return 1;
+        return -1;
+    }
     bool physically_down(int index) const {
         return initial_physical_[index] || physical_[index] != 0;
     }
@@ -184,13 +191,16 @@ private:
         return physical_[index] ? std::countr_zero(physical_[index]) + 1 : 0;
     }
     bool wanted(int index) const {
-        const bool blocked = keyboard_override_ && (physically_down(0) || physically_down(1));
+        if (!key_bound(codes_[index])) return false;
+        const bool blocked = keyboard_override_
+            && ((key_bound(codes_[0]) && physically_down(0)) || (key_bound(codes_[1]) && physically_down(1)));
         return physically_down(index) || (!blocked
             && ((index == 0 && desired_ == direction::left)
                 || (index == 1 && desired_ == direction::right)));
     }
     template<class sink_type>
     void sync(int index, bool next, sink_type&& send) {
+        if (!key_bound(codes_[index])) return;
         if (next == output_down_[index]) return;
         const int device = next && physically_down(index) ? physical_device(index) : desired_device_;
         if (next && (device < 1 || device > 10)) throw std::runtime_error("No output keyboard selected");
@@ -226,13 +236,14 @@ public:
     axis_mapping(filter_settings filter, key_code negative, key_code positive,
                  bool pulse, double hold_ratio, int period_ms, bool keyboard_override = false,
                  sensitivity_settings sensitivity = {}, double smoothing_factor = 1.0)
-        : filter_(filter, pulse), router_(negative, positive, keyboard_override), pulse_(pulse), ratio_(hold_ratio),
+        : filter_(filter, pulse), router_(negative, positive, keyboard_override), bound_(key_bound(negative) || key_bound(positive)), pulse_(pulse), ratio_(hold_ratio),
           period_(period_ms), pulse_counts_(filter.start_counts),
           sensitivity_(std::move(sensitivity)), curve_(sensitivity_.points), active_ratio_(hold_ratio),
           smoothing_factor_(smoothing_factor), smoothing_timeout_(filter.release_ms) {}
 
     template<class Sink>
     void update(std::int32_t delta, time_point now, int device, Sink&& send) {
+        if (!bound_) return;
         expire_smoothing(now);
         double input = 0;
         // Only actual motion advances lerp; zero packets must not replay its tail.
@@ -266,6 +277,7 @@ public:
 
     template<class Sink>
     void tick(time_point now, int device, Sink&& send) {
+        if (!bound_) return;
         expire_smoothing(now);
         const auto next = filter_.tick(now);
         if (!pulse_) { router_.set_direction(next, device, send); return; }
@@ -276,6 +288,7 @@ public:
 
     template<class Sink>
     void release(int device, Sink&& send) {
+        if (!bound_) return;
         smoothed_ = 0;
         last_motion_.reset();
         filter_.reset();
@@ -288,9 +301,10 @@ public:
     }
 
     template<class Sink>
-    bool physical(key_event event, Sink&& send) { return router_.physical(event, send); }
+    bool physical(key_event event, Sink&& send) { return bound_ && router_.physical(event, send); }
 
     std::optional<time_point> deadline() const {
+        if (!bound_) return std::nullopt;
         auto result = filter_.deadline();
         if (pulse_ && (pressed_ || credit_ >= pulse_counts_) && due_ && (!result || *due_ < *result)) result = due_;
         return result;
@@ -345,6 +359,7 @@ private:
     struct speed_sample { time_point time; double delta; };
     motion_filter filter_;
     key_router router_;
+    bool bound_;
     bool pulse_;
     double ratio_;
     int period_;
