@@ -287,7 +287,7 @@ void run(const configuration& source, const game_command* game, input_priority p
                 maintenance = now + milliseconds(50);
             }
             if (stop_requested.load()) {
-                if (child) std::cout << "Daemon: mapping stopped; game process continues.\n" << std::flush;
+                if (child) std::cout << "Daemon: mapping stopped; game process tree continues.\n" << std::flush;
                 break;
             }
             if ((bypass.held() || pie.opened() || chord.held()) && now >= device_check) {
@@ -308,7 +308,7 @@ void run(const configuration& source, const game_command* game, input_priority p
             if (child && now >= game_check) {
                 game_check = now + milliseconds(4);
                 if (child->exited()) {
-                    std::cout << "Daemon: game process exited; stopping mapping.\n" << std::flush;
+                    std::cout << "Daemon: game process tree exited; stopping mapping.\n" << std::flush;
                     break;
                 }
             }

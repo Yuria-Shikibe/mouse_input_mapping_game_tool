@@ -323,6 +323,10 @@ void run(const configuration& config, const game_command* game, input_priority p
     while (!stopping.load()) {
         const auto now = clock_type::now();
         if (now >= maintenance) {
+            if (child && child->exited()) {
+                std::cout << "Daemon: game process tree exited; stopping mapping.\n" << std::flush;
+                break;
+            }
             state.monitor.heartbeat(now);
             state.bypass.refresh_initial();
             if (state.chord.held() && !(GetAsyncKeyState(binding_vk(state.config.chord.trigger)) & 0x8000))
@@ -337,11 +341,7 @@ void run(const configuration& config, const game_command* game, input_priority p
         auto wake_at = maintenance;
         if (const auto due = state.pie.deadline()) wake_at = std::min(wake_at, *due);
         if (state.mapping_active()) if (const auto due = state.mapping->deadline(state.pie.opened())) wake_at = std::min(wake_at, *due);
-        const HANDLE game_handle = child ? child->handle() : nullptr;
-        if (waiter.wait(state.wake, game_handle, wake_at)) {
-            std::cout << "Daemon: game process exited; stopping mapping.\n" << std::flush;
-            break;
-        }
+        waiter.wait(state.wake, wake_at);
         MSG message{};
         const auto batch_end = clock_type::now() + std::chrono::microseconds(500);
         for (int count = 0; count < 32 && !stopping.load() && PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE); ++count) {
@@ -356,7 +356,7 @@ void run(const configuration& config, const game_command* game, input_priority p
         }
     }
     if (child && !child->exited())
-        std::cout << "Daemon: mapping stopped; game process continues.\n" << std::flush;
+        std::cout << "Daemon: mapping stopped; game process tree continues.\n" << std::flush;
     if (state.failure) std::rethrow_exception(state.failure);
     state.pie.cancel(send_key);
     if (state.mapping) state.mapping->release(send_key);
