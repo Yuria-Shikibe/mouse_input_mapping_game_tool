@@ -299,7 +299,8 @@ void run(const configuration& source, const game_command* game, input_priority p
                     if (session.api.get_hardware_id(session.context, id, hardware.data(),
                         static_cast<unsigned int>(sizeof(hardware))) == 0) {
                         if (is_mouse(id)) { bypass.remove_mouse(id); pie.remove_mouse(id, send_key); }
-                        else { bypass.remove_keyboard(id); pie.remove_keyboard(id, send_key); chord.remove_device(id, send_raw_key); }
+                        else { bypass.remove_keyboard(id); pie.remove_keyboard(id, send_key); }
+                        chord.remove_device(id, send_raw_key);
                     }
                 }
                 sync_bypass();
@@ -336,7 +337,7 @@ void run(const configuration& source, const game_command* game, input_priority p
                             output_keyboard, send_key, release_xy)) session.forward(device, stroke);
                     } else if (simple && chord.trigger_key(code)) {
                         session.forward(device, stroke);
-                        chord.trigger({device, code, down}, enabled && !bypass.held(), send_raw_key);
+                        chord.keyboard(device, code, down, enabled && !bypass.held(), device, send_raw_key);
                     } else if (simple && key_bound(config.toggle_key) && code == config.toggle_key) {
                         if (toggle.update(device, down)) {
                             if (!enabled && !bypass.held() && (key_is_down(config.left_key) || key_is_down(config.right_key)
@@ -379,6 +380,7 @@ void run(const configuration& source, const game_command* game, input_priority p
                     sync_bypass(bypass_packet);
                     if (monitor.recording())
                         monitor.motion(stroke.x, stroke.y, (stroke.flags & INTERCEPTION_MOUSE_MOVE_ABSOLUTE) != 0);
+                    chord.mouse(device, stroke.state, enabled && !bypass_packet, output_keyboard, send_raw_key);
                     const auto pie_packet = pie.packet(device, stroke.state, stroke.x, stroke.y,
                         (stroke.flags & INTERCEPTION_MOUSE_MOVE_ABSOLUTE) != 0, enabled && !bypass_packet,
                         now, output_keyboard, send_key, release_xy);

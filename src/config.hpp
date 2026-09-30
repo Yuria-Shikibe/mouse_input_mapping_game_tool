@@ -32,7 +32,7 @@ struct pie_settings {
 inline constexpr std::array<key_code, 4> pie_arrow_keys{0xe048, 0xe050, 0xe04b, 0xe04d};
 struct chord_settings {
     bool enabled = false;
-    key_code trigger = 0x2a; // LSHIFT
+    input_binding trigger{input_kind::keyboard, 0x2a}; // LSHIFT
     key_code first = 0x39, second = 0x2e; // SPACE + C
 };
 struct configuration {
