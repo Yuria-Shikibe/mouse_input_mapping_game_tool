@@ -23,7 +23,7 @@ int wmain(int argc, wchar_t** argv) {
                     "--input-priority <normal|above-normal> sets input thread priority (default normal; before --daemon).\n"
                     "Default config: config.ini beside the EXE.\n"
                     "Defaults: X- A, X+ D, Y- S, Y+ W, toggle F8. Starts OFF.\n"
-                    "Mouse buttons: LMB SUBTRACT, RMB M, CMB T, X1 LSHIFT, X2 F. Wheel up/down R.\n"
+                    "Mouse buttons (LMB, RMB, CMB, X1, X2) and wheel up/down default to NONE.\n"
                     "X pulse defaults OFF; Y pulse defaults ON with 0.45 hold ratio.\n"
                     "Raw Input reads movement/buttons; SendInput sends keys. Disable mouse input in the game.\n"
                     "Original mouse input is NOT blocked. Absolute coordinates are ignored; buttons still map.\n"

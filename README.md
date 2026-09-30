@@ -118,11 +118,11 @@ daemon 模式要求配置文件存在，且本版本使用的所有键位都已�
 | --- | --- | --- |
 | X- / X+ | `left_key` / `right_key` | A / D |
 | Y- / Y+ | `up_key` / `down_key` | S / W |
-| 左键 LMB | `lmb_key` | SUBTRACT |
-| 右键 RMB | `rmb_key` | M |
-| 滚轮按下 CMB | `cmb_key` | T |
-| 侧键 1 / 侧键 2 | `x1_key` / `x2_key` | LSHIFT / F |
-| 滚轮上滑 / 下滑 | `wheel_up_key` / `wheel_down_key` | R / R |
+| 左键 LMB | `lmb_key` | NONE |
+| 右键 RMB | `rmb_key` | NONE |
+| 滚轮按下 CMB | `cmb_key` | NONE |
+| 侧键 1 / 侧键 2 | `x1_key` / `x2_key` | NONE / NONE |
+| 滚轮上滑 / 下滑 | `wheel_up_key` / `wheel_down_key` | NONE / NONE |
 | 开关 | `toggle_key` | F8 |
 
 ```powershell

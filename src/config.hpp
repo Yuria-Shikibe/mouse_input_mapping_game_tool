@@ -48,8 +48,8 @@ struct configuration {
     y_settings kernel_y;
     std::array<input_binding, 2> bypass_keys{};
     // LMB, RMB, CMB (middle), X1, X2. Used only by the user target.
-    std::array<key_code, 5> mouse_keys{0x4a, 0x32, 0x14, 0x2a, 0x21}; // SUBTRACT M T LSHIFT F
-    std::array<key_code, 2> wheel_keys{0x13, 0x13}; // Up/down R
+    std::array<key_code, 5> mouse_keys{}; // NONE
+    std::array<key_code, 2> wheel_keys{}; // Up/down NONE
     int window_ms = 10, release_ms = 60;
     int x_start_counts = 3, x_reverse_counts = 6;
     int y_start_counts = 2, y_reverse_counts = 4;
