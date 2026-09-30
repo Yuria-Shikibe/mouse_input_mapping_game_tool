@@ -40,10 +40,11 @@ public:
     input_waiter(const input_waiter&) = delete;
     input_waiter& operator=(const input_waiter&) = delete;
 
-    // The caller owns the stop flag and periodic process-tree checks.
-    void wait(HANDLE stop, time_point due) {
-        HANDLE handles[2]{stop};
+    // Returns true only for game exit; the caller owns the stop flag.
+    bool wait(HANDLE stop, HANDLE game, time_point due) {
+        HANDLE handles[3]{stop};
         DWORD count = 1;
+        if (game) handles[count++] = game;
         const auto now = clock_type::now();
         DWORD timeout = wait_milliseconds(due, now, 50);
         if (timer_ && due > now) {
@@ -62,7 +63,8 @@ public:
         const auto result = MsgWaitForMultipleObjectsEx(count, handles, timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         if (result == WAIT_FAILED)
             throw std::system_error(static_cast<int>(GetLastError()), std::system_category(), "Cannot wait for input");
-        if (timer_ && count > 1 && result == WAIT_OBJECT_0 + count - 1) armed_.reset();
+        if (timer_ && count > (game ? 2u : 1u) && result == WAIT_OBJECT_0 + count - 1) armed_.reset();
+        return game && result == WAIT_OBJECT_0 + 1;
     }
 private:
     HANDLE timer_ = nullptr;

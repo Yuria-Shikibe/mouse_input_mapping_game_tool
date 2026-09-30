@@ -15,10 +15,11 @@ public:
     game_process(const game_process&) = delete;
     game_process& operator=(const game_process&) = delete;
 
-    // Returns true only when the launched process and all descendants have exited.
+    HANDLE handle() const { return process_; }
+    // Returns true only when the directly launched process has exited.
     bool exited() const;
 private:
-    HANDLE job_{};
+    HANDLE process_{};
 };
 
 } // namespace mouse_mapping
