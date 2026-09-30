@@ -40,7 +40,7 @@ public:
     }
 
     std::optional<time_point> deadline() const {
-        return active_ || pending_count_ != 0 ? std::optional<time_point>(due_) : std::nullopt;
+        return active_ || pending_count_ != 0 ? std::optional(due_) : std::nullopt;
     }
 
     template<class Sink>

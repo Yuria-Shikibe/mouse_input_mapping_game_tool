@@ -34,7 +34,7 @@ game_process::game_process(const game_command& command) {
         if (!line.empty()) line += L' ';
         line += quote_argument(argument);
     }
-    std::vector<wchar_t> mutable_line(line.begin(), line.end());
+    std::vector mutable_line(line.begin(), line.end());
     mutable_line.push_back(L'\0');
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);

@@ -22,7 +22,7 @@ void gui_process::start(const std::filesystem::path& executable,
     if (active()) throw std::runtime_error("A tool is still running");
     if (!std::filesystem::is_regular_file(executable))
         throw std::runtime_error("Executable missing; place the selected tool beside the configuration editor");
-    std::vector<std::wstring> command{executable.wstring()};
+    std::vector command{executable.wstring()};
     command.insert(command.end(), arguments.begin(), arguments.end());
     auto line = windows_command_line(command);
     STARTUPINFOEXW startup{};

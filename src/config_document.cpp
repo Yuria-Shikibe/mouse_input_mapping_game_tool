@@ -19,7 +19,7 @@ std::span<const config_field> config_fields() {
         {"wheel_up_key", L"滚轮向上", field_kind::key, true},
         {"wheel_down_key", L"滚轮向下", field_kind::key, true},
         {"chord_enabled", L"一键双键", field_kind::toggle, false, L"默认关闭。总开关开启且未暂停时，按住触发键同时按住两个目标键；松开时释放。保留触发键原始输入。"},
-        {"chord_trigger_key", L"双键触发键", field_kind::key, false, L"默认左 Shift；仅实体键盘触发，合成输入不会递归触发。"},
+        {"chord_trigger_key", L"双键触发键", field_kind::input, false, L"默认左 Shift；点击后可录入键盘键或鼠标五键。仅实体输入触发，合成输入不会递归触发。"},
         {"chord_first_key", L"双键目标 1", field_kind::key, false},
         {"chord_second_key", L"双键目标 2", field_kind::key, false},
         {"toggle_key", L"映射开关", field_kind::key, false},

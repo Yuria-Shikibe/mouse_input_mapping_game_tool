@@ -38,7 +38,7 @@ int wmain(int argc, wchar_t** argv) {
                     "       mouse_input_mapping_kernel --check\n\n"
                     "--configure  Press keys, confirm with Enter, save, and exit.\n"
                     "--configure-text  Type key names (for IDE consoles), confirm, and save.\n"
-                    "--config     Configuration file (default: config.ini; fallback: config.user.ini beside the EXE).\n"
+                    "--config     Configuration file (default: config.ini beside the EXE).\n"
                     "--check      Check the DLL/driver and list accessible input devices.\n\n"
                     "--non-interactive  No repair dialogs; report failures to stderr and a startup log.\n"
                     "--install-driver  Install/repair the bundled driver (requests administrator access).\n\n"

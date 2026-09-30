@@ -52,7 +52,7 @@ bool has_filter(const wchar_t* class_key, const wchar_t* name) {
     DWORD bytes = 0;
     if (RegGetValueW(HKEY_LOCAL_MACHINE, class_key, L"UpperFilters", RRF_RT_REG_MULTI_SZ, nullptr, nullptr, &bytes) != ERROR_SUCCESS)
         return false;
-    std::vector<wchar_t> values(bytes / sizeof(wchar_t) + 2, L'\0');
+    std::vector values(bytes / sizeof(wchar_t) + 2, L'\0');
     if (RegGetValueW(HKEY_LOCAL_MACHINE, class_key, L"UpperFilters", RRF_RT_REG_MULTI_SZ, nullptr, values.data(), &bytes) != ERROR_SUCCESS)
         return false;
     for (const auto* value = values.data(); *value; value += std::wcslen(value) + 1)

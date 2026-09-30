@@ -15,7 +15,7 @@
 
 namespace mouse_mapping {
 namespace {
-std::atomic<bool> stopping = false;
+std::atomic stopping = false;
 std::atomic<HANDLE> shutdown_done = nullptr;
 std::atomic<HANDLE> stop_event = nullptr;
 

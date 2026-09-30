@@ -112,7 +112,7 @@ public:
     InterceptionContext context{};
 };
 
-std::atomic<bool> stop_requested = false;
+std::atomic stop_requested = false;
 std::atomic<HANDLE> shutdown_complete = nullptr;
 
 BOOL WINAPI console_handler(DWORD event) {

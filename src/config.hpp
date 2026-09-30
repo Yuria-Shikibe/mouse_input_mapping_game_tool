@@ -8,6 +8,8 @@
 
 namespace mouse_mapping {
 
+using std::literals::operator""sv;
+
 enum class input_kind { none, keyboard, mouse };
 struct input_binding {
     input_kind kind = input_kind::none;
@@ -48,18 +50,15 @@ struct configuration {
     // LMB, RMB, CMB (middle), X1, X2. Used only by the user target.
     std::array<key_code, 5> mouse_keys{0x4a, 0x32, 0x14, 0x2a, 0x21}; // SUBTRACT M T LSHIFT F
     std::array<key_code, 2> wheel_keys{0x13, 0x13}; // Up/down R
-    filter_settings filter{10, 3, 6, 60};
-    // Missing per-axis fields inherit legacy filter thresholds when loading.
+    int window_ms = 10, release_ms = 60;
     int x_start_counts = 3, x_reverse_counts = 6;
     int y_start_counts = 2, y_reverse_counts = 4;
     sensitivity_settings x_curve;
     sensitivity_settings y_curve{false, 1400, {{0, 0}, {0.32173913043478258, 0.080645161290322578}, {1, 1}}};
     double x_smoothing_factor = 1.0, y_smoothing_factor = 0.85;
     filter_settings axis_filter(bool y) const {
-        auto result = filter;
-        result.start_counts = y ? y_start_counts : x_start_counts;
-        result.reverse_counts = y ? y_reverse_counts : x_reverse_counts;
-        return result;
+        return {window_ms, y ? y_start_counts : x_start_counts,
+            y ? y_reverse_counts : x_reverse_counts, release_ms};
     }
     bool x_pulse_enabled = false;
     bool x_keyboard_override_enabled = true;
@@ -82,9 +81,8 @@ inline configuration effective_config(configuration config) {
     return config;
 }
 
-inline constexpr std::array<const char*, 5> mouse_key_fields{
-    "lmb_key", "rmb_key", "cmb_key", "x1_key", "x2_key"};
-inline constexpr std::array<const char*, 2> wheel_key_fields{"wheel_up_key", "wheel_down_key"};
+inline constexpr std::array mouse_key_fields{"lmb_key"sv, "rmb_key"sv, "cmb_key"sv, "x1_key"sv, "x2_key"sv};
+inline constexpr std::array wheel_key_fields{"wheel_up_key"sv, "wheel_down_key"sv};
 
 key_code parse_key(std::string_view text);
 input_binding parse_input_binding(std::string_view text);

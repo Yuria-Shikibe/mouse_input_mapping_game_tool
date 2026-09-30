@@ -17,25 +17,21 @@ jobs:
         run: cmake -S . -B build/ci -G "Visual Studio 17 2022" -A x64
       - name: Build
         run: cmake --build build/ci --config Release --parallel
-      - name: Package
-        run: cpack --config build/ci/CPackConfig.cmake -C Release
-      - name: Verify runtime and GUI executables are packaged
+      # upload-artifact creates the downloadable ZIP itself.  Install the release
+      # tree directly so the artifact is not a ZIP containing CPack's ZIP.
+      - name: Install package tree
+        run: cmake --install build/ci --config Release --prefix dist/windows-x64
+      - name: Verify runtime and GUI executables are installed
         shell: pwsh
         run: |
-          $packages = @(Get-ChildItem -LiteralPath dist -Filter '*.zip' -File)
-          if ($packages.Count -ne 1) { throw "Expected one Release ZIP, found $($packages.Count)" }
-          Add-Type -AssemblyName System.IO.Compression
-          $archive = [System.IO.Compression.ZipFile]::OpenRead($packages[0].FullName)
-          try {
-            $files = @($archive.Entries | ForEach-Object { [System.IO.Path]::GetFileName($_.FullName) })
-            foreach ($exe in @('mouse_input_mapping_user.exe', 'mouse_input_mapping_kernel.exe', 'mouse_input_mapping_config.exe')) {
-              if ($files -notcontains $exe) { throw "Release ZIP is missing $exe" }
+          $packageRoot = 'dist/windows-x64'
+          foreach ($exe in @('mouse_input_mapping_user.exe', 'mouse_input_mapping_kernel.exe', 'mouse_input_mapping_config.exe')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $packageRoot $exe) -PathType Leaf)) {
+              throw "Release package is missing $exe"
             }
-          } finally {
-            $archive.Dispose()
           }
       - uses: actions/upload-artifact@v4
         with:
           name: mouse-input-mapping-windows-x64
-          path: dist/*.zip
+          path: dist/windows-x64
           if-no-files-found: error

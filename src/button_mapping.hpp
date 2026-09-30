@@ -35,7 +35,7 @@ public:
             const bool previous = output_[index];
             physical_[index] = event.down;
             sync(index, send);
-            if ((!event.down && !previous && !output_[index]) || (repeat && previous && output_[index])) send(event);
+            if ((!event.down && !previous && !output_[index]) || (repeat && previous && output_[index])) send(index, event);
             return true;
         }
         return false;
@@ -61,7 +61,7 @@ private:
         bool wanted = physical_[index];
         for (const auto& entry : mice_) wanted = wanted || entry.second[index];
         if (wanted == output_[index]) return;
-        send(key_event{1, codes_[index], wanted});
+        send(index, key_event{1, codes_[index], wanted});
         output_[index] = wanted;
     }
     std::array<key_code, 5> codes_;

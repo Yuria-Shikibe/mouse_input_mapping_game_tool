@@ -52,7 +52,7 @@ add_dependencies(mouse_input_mapping_config mouse_input_mapping_user mouse_input
 
 install(TARGETS mouse_input_mapping_kernel mouse_input_mapping_user mouse_input_mapping_config RUNTIME DESTINATION .)
 install(FILES third_party/interception/bin/interception.dll README.md LICENSE THIRD_PARTY_NOTICES.md CONTRIBUTING.md DESTINATION .)
-install(FILES assets/config.example.ini assets/config.user.example.ini DESTINATION .)
+install(FILES assets/config.example.ini DESTINATION .)
 install(DIRECTORY docs/ DESTINATION docs)
 install(FILES third_party/interception/installer/install-interception.exe DESTINATION driver)
 install(FILES third_party/interception/README.md DESTINATION third_party/interception)

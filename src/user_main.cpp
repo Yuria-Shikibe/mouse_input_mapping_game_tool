@@ -21,7 +21,7 @@ int wmain(int argc, wchar_t** argv) {
                     "       mouse_input_mapping_user [--config <path>] --daemon <game.exe> [game arguments...]\n"
                     "--daemon launches and monitors a game; configure all keys beforehand.\n"
                     "--input-priority <normal|above-normal> sets input thread priority (default normal; before --daemon).\n"
-                    "Default config: config.ini beside the EXE (fallback: config.user.ini).\n"
+                    "Default config: config.ini beside the EXE.\n"
                     "Defaults: X- A, X+ D, Y- S, Y+ W, toggle F8. Starts OFF.\n"
                     "Mouse buttons: LMB SUBTRACT, RMB M, CMB T, X1 LSHIFT, X2 F. Wheel up/down R.\n"
                     "X pulse defaults OFF; Y pulse defaults ON with 0.45 hold ratio.\n"

@@ -16,19 +16,19 @@ namespace mouse_mapping {
 namespace config_detail {
 
 constexpr std::pair<std::string_view, unsigned int> named_keys[] = {
-    {"LEFT", VK_LEFT}, {"RIGHT", VK_RIGHT}, {"UP", VK_UP}, {"DOWN", VK_DOWN},
-    {"SPACE", VK_SPACE}, {"ENTER", VK_RETURN}, {"TAB", VK_TAB}, {"ESC", VK_ESCAPE},
-    {"BACKSPACE", VK_BACK}, {"INSERT", VK_INSERT}, {"DELETE", VK_DELETE},
-    {"HOME", VK_HOME}, {"END", VK_END}, {"PAGE_UP", VK_PRIOR}, {"PAGE_DOWN", VK_NEXT},
-    {"LSHIFT", VK_LSHIFT}, {"RSHIFT", VK_RSHIFT}, {"LCTRL", VK_LCONTROL},
-    {"RCTRL", VK_RCONTROL}, {"LALT", VK_LMENU}, {"RALT", VK_RMENU},
-    {"LWIN", VK_LWIN}, {"RWIN", VK_RWIN}, {"APPS", VK_APPS},
-    {"CAPS_LOCK", VK_CAPITAL}, {"NUM_LOCK", VK_NUMLOCK}, {"SCROLL_LOCK", VK_SCROLL},
-    {"NUM0", VK_NUMPAD0}, {"NUM1", VK_NUMPAD1}, {"NUM2", VK_NUMPAD2},
-    {"NUM3", VK_NUMPAD3}, {"NUM4", VK_NUMPAD4}, {"NUM5", VK_NUMPAD5},
-    {"NUM6", VK_NUMPAD6}, {"NUM7", VK_NUMPAD7}, {"NUM8", VK_NUMPAD8}, {"NUM9", VK_NUMPAD9},
-    {"ADD", VK_ADD}, {"SUBTRACT", VK_SUBTRACT}, {"MULTIPLY", VK_MULTIPLY},
-    {"DIVIDE", VK_DIVIDE}, {"DECIMAL", VK_DECIMAL}
+    {"LEFT"sv, VK_LEFT}, {"RIGHT"sv, VK_RIGHT}, {"UP"sv, VK_UP}, {"DOWN"sv, VK_DOWN},
+    {"SPACE"sv, VK_SPACE}, {"ENTER"sv, VK_RETURN}, {"TAB"sv, VK_TAB}, {"ESC"sv, VK_ESCAPE},
+    {"BACKSPACE"sv, VK_BACK}, {"INSERT"sv, VK_INSERT}, {"DELETE"sv, VK_DELETE},
+    {"HOME"sv, VK_HOME}, {"END"sv, VK_END}, {"PAGE_UP"sv, VK_PRIOR}, {"PAGE_DOWN"sv, VK_NEXT},
+    {"LSHIFT"sv, VK_LSHIFT}, {"RSHIFT"sv, VK_RSHIFT}, {"LCTRL"sv, VK_LCONTROL},
+    {"RCTRL"sv, VK_RCONTROL}, {"LALT"sv, VK_LMENU}, {"RALT"sv, VK_RMENU},
+    {"LWIN"sv, VK_LWIN}, {"RWIN"sv, VK_RWIN}, {"APPS"sv, VK_APPS},
+    {"CAPS_LOCK"sv, VK_CAPITAL}, {"NUM_LOCK"sv, VK_NUMLOCK}, {"SCROLL_LOCK"sv, VK_SCROLL},
+    {"NUM0"sv, VK_NUMPAD0}, {"NUM1"sv, VK_NUMPAD1}, {"NUM2"sv, VK_NUMPAD2},
+    {"NUM3"sv, VK_NUMPAD3}, {"NUM4"sv, VK_NUMPAD4}, {"NUM5"sv, VK_NUMPAD5},
+    {"NUM6"sv, VK_NUMPAD6}, {"NUM7"sv, VK_NUMPAD7}, {"NUM8"sv, VK_NUMPAD8}, {"NUM9"sv, VK_NUMPAD9},
+    {"ADD"sv, VK_ADD}, {"SUBTRACT"sv, VK_SUBTRACT}, {"MULTIPLY"sv, VK_MULTIPLY},
+    {"DIVIDE"sv, VK_DIVIDE}, {"DECIMAL"sv, VK_DECIMAL}
 };
 
 unsigned int scan_code_for_vk(unsigned int vk) {
@@ -47,9 +47,9 @@ unsigned int scan_code_for_vk(unsigned int vk) {
 }
 
 std::string trim(std::string_view value) {
-    const auto first = value.find_first_not_of(" \t\r\n");
+    const auto first = value.find_first_not_of(" \t\r\n"sv);
     if (first == std::string_view::npos) return {};
-    return std::string(value.substr(first, value.find_last_not_of(" \t\r\n") - first + 1));
+    return std::string(value.substr(first, value.find_last_not_of(" \t\r\n"sv) - first + 1));
 }
 
 int parse_integer(std::string_view value) {
@@ -77,8 +77,8 @@ double parse_ratio(std::string_view value) {
 }
 
 bool parse_switch(std::string_view value) {
-    if (value == "0") return false;
-    if (value == "1") return true;
+    if (value == "0"sv) return false;
+    if (value == "1"sv) return true;
     throw std::runtime_error("Expected 0 or 1");
 }
 
@@ -100,13 +100,13 @@ key_code parse_key(std::string_view text) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
         return static_cast<char>(std::toupper(c));
     });
-    if (value == "NONE") return unbound_key;
+    if (value == "NONE"sv) return unbound_key;
     unsigned int code = 0;
-    if (value.starts_with("0X")) {
+    if (value.starts_with("0X"sv)) {
         const auto [end, error] = std::from_chars(value.data() + 2, value.data() + value.size(), code, 16);
         if (error != std::errc{} || end != value.data() + value.size() || code > 0xffff)
             throw std::runtime_error("Invalid hexadecimal scan code");
-    } else if (value == "NUM_ENTER") {
+    } else if (value == "NUM_ENTER"sv) {
         code = 0xe01c;
     } else {
         unsigned int vk = 0;
@@ -126,12 +126,12 @@ key_code parse_key(std::string_view text) {
 }
 
 std::string format_key(key_code code) {
-    if (!key_bound(code)) return "NONE";
+    if (!key_bound(code)) return std::string{"NONE"sv};
     return std::format("0x{:04x}", code);
 }
 
 std::string key_name(key_code code) {
-    if (!key_bound(code)) return "NONE";
+    if (!key_bound(code)) return std::string{"NONE"sv};
     for (unsigned int vk = 'A'; vk <= 'Z'; ++vk)
         if (scan_code_for_vk(vk) == code) return std::string(1, static_cast<char>(vk));
     for (unsigned int vk = '0'; vk <= '9'; ++vk)
@@ -140,31 +140,31 @@ std::string key_name(key_code code) {
         if (scan_code_for_vk(vk) == code) return std::format("F{}", vk - VK_F1 + 1);
     for (const auto& [name, vk] : named_keys)
         if (scan_code_for_vk(vk) == code) return std::string(name);
-    if (code == 0xe01c) return "NUM_ENTER";
+    if (code == 0xe01c) return std::string{"NUM_ENTER"sv};
     const auto vk = MapVirtualKeyW(code, MAPVK_VSC_TO_VK_EX);
     const auto character = MapVirtualKeyW(vk, MAPVK_VK_TO_CHAR) & 0x7fffffff;
     if (character >= 33 && character <= 126) return std::string(1, static_cast<char>(character));
-    return "SCAN_CODE";
+    return std::string{"SCAN_CODE"sv};
 }
 
 std::string describe_key(key_code code) {
-    return key_bound(code) ? std::format("{} ({})", key_name(code), format_key(code)) : "NONE";
+    return key_bound(code) ? std::format("{} ({})", key_name(code), format_key(code)) : std::string{"NONE"sv};
 }
 
-static constexpr std::array mouse_binding_names{"MOUSE_LEFT", "MOUSE_RIGHT", "MOUSE_MIDDLE", "MOUSE_X1", "MOUSE_X2"};
-static constexpr std::array mouse_binding_aliases{"LMB", "RMB", "CMB", "X1", "X2"};
+static constexpr std::array mouse_binding_names{
+    "MOUSE_LEFT"sv, "MOUSE_RIGHT"sv, "MOUSE_MIDDLE"sv, "MOUSE_X1"sv, "MOUSE_X2"sv};
 input_binding parse_input_binding(std::string_view text) {
     auto value = trim(text);
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
-    if (value == "NONE") return {};
+    if (value == "NONE"sv) return {};
     for (std::size_t i = 0; i < mouse_binding_names.size(); ++i)
-        if (value == mouse_binding_names[i] || value == mouse_binding_aliases[i])
+        if (value == mouse_binding_names[i])
             return {input_kind::mouse, static_cast<key_code>(i)};
     return {input_kind::keyboard, parse_key(value)};
 }
 std::string format_input_binding(input_binding binding) {
-    if (binding.kind == input_kind::none) return "NONE";
-    if (binding.kind == input_kind::mouse && binding.code < mouse_binding_names.size()) return mouse_binding_names[binding.code];
+    if (binding.kind == input_kind::none) return std::string{"NONE"sv};
+    if (binding.kind == input_kind::mouse && binding.code < mouse_binding_names.size()) return std::string{mouse_binding_names[binding.code]};
     if (binding.kind == input_kind::keyboard) return format_key(binding.code);
     throw std::runtime_error("Invalid input binding");
 }
@@ -181,7 +181,7 @@ template<class Range>
 bool unique_bound_keys(const Range& keys) {
     std::set<key_code> seen;
     for (const auto key : keys)
-        if (key_bound(key) && !seen.insert(key).second) return false;
+        if (mouse_mapping::key_bound(key) && !seen.insert(key).second) return false;
     return true;
 }
 
@@ -308,12 +308,8 @@ void validate(const configuration& config) {
             throw std::runtime_error(y ? "y_curve_full_speed must be 1..1000000" : "x_curve_full_speed must be 1..1000000");
         validate_curve(curve.points);
     }
-    const auto& filter = config.filter;
-    if (filter.window_ms < 1 || filter.window_ms > 1000) throw std::runtime_error("window_ms must be 1..1000");
-    if (filter.start_counts < 1 || filter.start_counts > 10000) throw std::runtime_error("start_counts must be 1..10000");
-    if (filter.reverse_counts < filter.start_counts || filter.reverse_counts > 10000)
-        throw std::runtime_error("reverse_counts must be start_counts..10000");
-    if (filter.release_ms < filter.window_ms || filter.release_ms > 2000)
+    if (config.window_ms < 1 || config.window_ms > 1000) throw std::runtime_error("window_ms must be 1..1000");
+    if (config.release_ms < config.window_ms || config.release_ms > 2000)
         throw std::runtime_error("release_ms must be window_ms..2000");
     if (!std::isfinite(config.x_hold_ratio) || config.x_hold_ratio < 0 || config.x_hold_ratio > 1
         || !std::isfinite(config.y_hold_ratio) || config.y_hold_ratio < 0 || config.y_hold_ratio > 1)
@@ -322,17 +318,97 @@ void validate(const configuration& config) {
         throw std::runtime_error("pulse_period_ms must be 2..1000");
 }
 
+namespace {
+
+struct entry {
+    std::string_view name;
+    void (*parser)(configuration&, std::string_view);
+};
+
+constexpr auto config_entries = [] {
+    std::array entries{
+        entry{"left_key"sv, [](configuration& config, std::string_view value) { config.left_key = parse_key(value); }},
+        entry{"right_key"sv, [](configuration& config, std::string_view value) { config.right_key = parse_key(value); }},
+        entry{"chord_enabled"sv, [](configuration& config, std::string_view value) { config.chord.enabled = parse_switch(value); }},
+        entry{"chord_trigger_key"sv, [](configuration& config, std::string_view value) { config.chord.trigger = parse_key(value); }},
+        entry{"chord_first_key"sv, [](configuration& config, std::string_view value) { config.chord.first = parse_key(value); }},
+        entry{"chord_second_key"sv, [](configuration& config, std::string_view value) { config.chord.second = parse_key(value); }},
+        entry{"toggle_key"sv, [](configuration& config, std::string_view value) { config.toggle_key = parse_key(value); }},
+        entry{"up_key"sv, [](configuration& config, std::string_view value) { config.up_key = parse_key(value); }},
+        entry{"down_key"sv, [](configuration& config, std::string_view value) { config.down_key = parse_key(value); }},
+        entry{"pie_trigger"sv, [](configuration& config, std::string_view value) { config.pie.trigger = parse_input_binding(value); }},
+        entry{"pie_visual_enabled"sv, [](configuration& config, std::string_view value) { config.pie.visual_enabled = parse_switch(value); }},
+        entry{"pie_deadzone_counts"sv, [](configuration& config, std::string_view value) { config.pie.deadzone_counts = parse_integer(value); }},
+        entry{"pie_radius_counts"sv, [](configuration& config, std::string_view value) { config.pie.radius_counts = parse_integer(value); }},
+        entry{"pie_hysteresis_degrees"sv, [](configuration& config, std::string_view value) { config.pie.hysteresis_degrees = parse_number(value); }},
+        entry{"pie_key_hold_ms"sv, [](configuration& config, std::string_view value) { config.pie.key_hold_ms = parse_integer(value); }},
+        entry{"bypass_key_1"sv, [](configuration& config, std::string_view value) { config.bypass_keys[0] = parse_input_binding(value); }},
+        entry{"bypass_key_2"sv, [](configuration& config, std::string_view value) { config.bypass_keys[1] = parse_input_binding(value); }},
+        entry{"kernel_y_enabled"sv, [](configuration& config, std::string_view value) { config.kernel_y_enabled = parse_switch(value); }},
+        entry{"kernel_y_block"sv, [](configuration& config, std::string_view value) { config.kernel_y_block = parse_switch(value); }},
+        entry{"kernel_y_up_key"sv, [](configuration& config, std::string_view value) { config.kernel_y.up_key = parse_key(value); }},
+        entry{"kernel_y_down_key"sv, [](configuration& config, std::string_view value) { config.kernel_y.down_key = parse_key(value); }},
+        entry{"kernel_y_start_counts"sv, [](configuration& config, std::string_view value) { config.kernel_y.start_counts = parse_integer(value); }},
+        entry{"kernel_y_reverse_counts"sv, [](configuration& config, std::string_view value) { config.kernel_y.reverse_counts = parse_integer(value); }},
+        entry{"kernel_y_smoothing_factor"sv, [](configuration& config, std::string_view value) { config.kernel_y.smoothing_factor = parse_ratio(value); }},
+        entry{"kernel_y_hold_ratio"sv, [](configuration& config, std::string_view value) { config.kernel_y.hold_ratio = parse_ratio(value); }},
+        entry{"kernel_y_pulse_enabled"sv, [](configuration& config, std::string_view value) { config.kernel_y.pulse_enabled = parse_switch(value); }},
+        entry{"kernel_y_curve_enabled"sv, [](configuration& config, std::string_view value) { config.kernel_y.curve.enabled = parse_switch(value); }},
+        entry{"kernel_y_curve_full_speed"sv, [](configuration& config, std::string_view value) { config.kernel_y.curve.full_speed = parse_number(value); }},
+        entry{"kernel_y_curve_points"sv, [](configuration& config, std::string_view value) { config.kernel_y.curve.points = parse_curve(value); }},
+        entry{"window_ms"sv, [](configuration& config, std::string_view value) { config.window_ms = parse_integer(value); }},
+        entry{"release_ms"sv, [](configuration& config, std::string_view value) { config.release_ms = parse_integer(value); }},
+        entry{"x_pulse_enabled"sv, [](configuration& config, std::string_view value) { config.x_pulse_enabled = parse_switch(value); }},
+        entry{"x_keyboard_override_enabled"sv, [](configuration& config, std::string_view value) { config.x_keyboard_override_enabled = parse_switch(value); }},
+        entry{"y_pulse_enabled"sv, [](configuration& config, std::string_view value) { config.y_pulse_enabled = parse_switch(value); }},
+        entry{"x_hold_ratio"sv, [](configuration& config, std::string_view value) { config.x_hold_ratio = parse_ratio(value); }},
+        entry{"y_hold_ratio"sv, [](configuration& config, std::string_view value) { config.y_hold_ratio = parse_ratio(value); }},
+        entry{"x_smoothing_factor"sv, [](configuration& config, std::string_view value) { config.x_smoothing_factor = parse_ratio(value); }},
+        entry{"y_smoothing_factor"sv, [](configuration& config, std::string_view value) { config.y_smoothing_factor = parse_ratio(value); }},
+        entry{"x_start_counts"sv, [](configuration& config, std::string_view value) { config.x_start_counts = parse_integer(value); }},
+        entry{"x_reverse_counts"sv, [](configuration& config, std::string_view value) { config.x_reverse_counts = parse_integer(value); }},
+        entry{"x_curve_enabled"sv, [](configuration& config, std::string_view value) { config.x_curve.enabled = parse_switch(value); }},
+        entry{"x_curve_full_speed"sv, [](configuration& config, std::string_view value) { config.x_curve.full_speed = parse_number(value); }},
+        entry{"x_curve_points"sv, [](configuration& config, std::string_view value) { config.x_curve.points = parse_curve(value); }},
+        entry{"y_start_counts"sv, [](configuration& config, std::string_view value) { config.y_start_counts = parse_integer(value); }},
+        entry{"y_reverse_counts"sv, [](configuration& config, std::string_view value) { config.y_reverse_counts = parse_integer(value); }},
+        entry{"y_curve_enabled"sv, [](configuration& config, std::string_view value) { config.y_curve.enabled = parse_switch(value); }},
+        entry{"y_curve_full_speed"sv, [](configuration& config, std::string_view value) { config.y_curve.full_speed = parse_number(value); }},
+        entry{"y_curve_points"sv, [](configuration& config, std::string_view value) { config.y_curve.points = parse_curve(value); }},
+        entry{"pulse_period_ms"sv, [](configuration& config, std::string_view value) { config.pulse_period_ms = parse_integer(value); }},
+        entry{"lmb_key"sv, [](configuration& config, std::string_view value) { config.mouse_keys[0] = parse_key(value); }},
+        entry{"rmb_key"sv, [](configuration& config, std::string_view value) { config.mouse_keys[1] = parse_key(value); }},
+        entry{"cmb_key"sv, [](configuration& config, std::string_view value) { config.mouse_keys[2] = parse_key(value); }},
+        entry{"x1_key"sv, [](configuration& config, std::string_view value) { config.mouse_keys[3] = parse_key(value); }},
+        entry{"x2_key"sv, [](configuration& config, std::string_view value) { config.mouse_keys[4] = parse_key(value); }},
+        entry{"wheel_up_key"sv, [](configuration& config, std::string_view value) { config.wheel_keys[0] = parse_key(value); }},
+        entry{"wheel_down_key"sv, [](configuration& config, std::string_view value) { config.wheel_keys[1] = parse_key(value); }},
+    };
+    std::ranges::sort(entries, {}, &entry::name);
+    return entries;
+}();
+
+static_assert(std::ranges::is_sorted(config_entries, {}, &entry::name));
+static_assert(std::ranges::adjacent_find(config_entries, {}, &entry::name) == config_entries.end());
+
+const entry* find_entry(std::string_view name) {
+    const auto found = std::ranges::lower_bound(config_entries, name, {}, &entry::name);
+    return found != config_entries.end() && found->name == name ? std::to_address(found) : nullptr;
+}
+
+} // namespace
+
 configuration read_config(std::istream& input, bool map_y, bool require_bindings) {
     configuration config;
     config.map_y = map_y;
-    std::set<std::string> seen;
+    std::set<std::string, std::less<>> seen;
     std::string line;
     int line_number = 0;
     while (std::getline(input, line)) {
         ++line_number;
-        if (line_number == 1 && line.starts_with("\xef\xbb\xbf")) line.erase(0, 3);
-        line = trim(std::string_view(line).substr(0, line.find_first_of(";#")));
-        if (line.empty() || line == "[mapping]") continue;
+        if (line_number == 1 && line.starts_with("\xef\xbb\xbf"sv)) line.erase(0, 3);
+        line = trim(std::string_view(line).substr(0, line.find_first_of(";#"sv)));
+        if (line.empty() || line == "[mapping]"sv) continue;
         const auto separator = line.find('=');
         if (separator == std::string::npos)
             throw std::runtime_error(std::format("Config line {}: expected key=value", line_number));
@@ -340,96 +416,26 @@ configuration read_config(std::istream& input, bool map_y, bool require_bindings
         const auto value = trim(std::string_view(line).substr(separator + 1));
         try {
             if (!seen.insert(name).second) throw std::runtime_error("Duplicate field");
-            if (name == "left_key") config.left_key = parse_key(value);
-            else if (name == "right_key") config.right_key = parse_key(value);
-            else if (name == "chord_enabled") config.chord.enabled = parse_switch(value);
-            else if (name == "chord_trigger_key") config.chord.trigger = parse_key(value);
-            else if (name == "chord_first_key") config.chord.first = parse_key(value);
-            else if (name == "chord_second_key") config.chord.second = parse_key(value);
-            else if (name == "toggle_key") config.toggle_key = parse_key(value);
-            else if (name == "up_key") config.up_key = parse_key(value);
-            else if (name == "down_key") config.down_key = parse_key(value);
-            else if (name == "pie_trigger") config.pie.trigger = parse_input_binding(value);
-            else if (name == "pie_visual_enabled") config.pie.visual_enabled = parse_switch(value);
-            else if (name == "pie_deadzone_counts") config.pie.deadzone_counts = parse_integer(value);
-            else if (name == "pie_radius_counts") config.pie.radius_counts = parse_integer(value);
-            else if (name == "pie_hysteresis_degrees") config.pie.hysteresis_degrees = parse_number(value);
-            else if (name == "pie_key_hold_ms") config.pie.key_hold_ms = parse_integer(value);
-            else if (name == "bypass_key_1") config.bypass_keys[0] = parse_input_binding(value);
-            else if (name == "bypass_key_2") config.bypass_keys[1] = parse_input_binding(value);
-            else if (name == "kernel_y_enabled") config.kernel_y_enabled = parse_switch(value);
-            else if (name == "kernel_y_block") config.kernel_y_block = parse_switch(value);
-            else if (name == "kernel_y_up_key") config.kernel_y.up_key = parse_key(value);
-            else if (name == "kernel_y_down_key") config.kernel_y.down_key = parse_key(value);
-            else if (name == "kernel_y_start_counts") config.kernel_y.start_counts = parse_integer(value);
-            else if (name == "kernel_y_reverse_counts") config.kernel_y.reverse_counts = parse_integer(value);
-            else if (name == "kernel_y_smoothing_factor") config.kernel_y.smoothing_factor = parse_ratio(value);
-            else if (name == "kernel_y_hold_ratio") config.kernel_y.hold_ratio = parse_ratio(value);
-            else if (name == "kernel_y_pulse_enabled") config.kernel_y.pulse_enabled = parse_switch(value);
-            else if (name == "kernel_y_curve_enabled") config.kernel_y.curve.enabled = parse_switch(value);
-            else if (name == "kernel_y_curve_full_speed") config.kernel_y.curve.full_speed = parse_number(value);
-            else if (name == "kernel_y_curve_points") config.kernel_y.curve.points = parse_curve(value);
-            else if (name == "window_ms") config.filter.window_ms = parse_integer(value);
-            else if (name == "start_counts") config.filter.start_counts = parse_integer(value);
-            else if (name == "reverse_counts") config.filter.reverse_counts = parse_integer(value);
-            else if (name == "release_ms") config.filter.release_ms = parse_integer(value);
-            else if (name == "x_pulse_enabled") config.x_pulse_enabled = parse_switch(value);
-            else if (name == "x_keyboard_override_enabled") config.x_keyboard_override_enabled = parse_switch(value);
-            else if (name == "y_pulse_enabled") config.y_pulse_enabled = parse_switch(value);
-            else if (name == "x_hold_ratio") config.x_hold_ratio = parse_ratio(value);
-            else if (name == "y_hold_ratio") config.y_hold_ratio = parse_ratio(value);
-            else if (name == "x_smoothing_factor") config.x_smoothing_factor = parse_ratio(value);
-            else if (name == "y_smoothing_factor") config.y_smoothing_factor = parse_ratio(value);
-            else if (name == "x_start_counts") config.x_start_counts = parse_integer(value);
-            else if (name == "x_reverse_counts") config.x_reverse_counts = parse_integer(value);
-            else if (name == "x_curve_enabled") config.x_curve.enabled = parse_switch(value);
-            else if (name == "x_curve_full_speed") config.x_curve.full_speed = parse_number(value);
-            else if (name == "x_curve_points") config.x_curve.points = parse_curve(value);
-            else if (name == "y_start_counts") config.y_start_counts = parse_integer(value);
-            else if (name == "y_reverse_counts") config.y_reverse_counts = parse_integer(value);
-            else if (name == "y_curve_enabled") config.y_curve.enabled = parse_switch(value);
-            else if (name == "y_curve_full_speed") config.y_curve.full_speed = parse_number(value);
-            else if (name == "y_curve_points") config.y_curve.points = parse_curve(value);
-            else if (name == "pulse_period_ms") config.pulse_period_ms = parse_integer(value);
-            else {
-                bool found = false;
-                for (std::size_t index = 0; index < mouse_key_fields.size(); ++index) {
-                    if (name == mouse_key_fields[index]) {
-                        config.mouse_keys[index] = parse_key(value);
-                        found = true;
-                        break;
-                    }
-                }
-                for (std::size_t index = 0; index < wheel_key_fields.size(); ++index) {
-                    if (name == wheel_key_fields[index]) {
-                        config.wheel_keys[index] = parse_key(value);
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) throw std::runtime_error("Unknown field");
-            }
+            const auto* entry = find_entry(name);
+            if (!entry) throw std::runtime_error("Unknown field");
+            entry->parser(config, value);
         } catch (const std::exception& error) {
             throw std::runtime_error(std::format("Config line {} ({}): {}", line_number, name, error.what()));
         }
     }
     if (input.bad()) throw std::runtime_error("Cannot read configuration");
     if (require_bindings) {
-        for (const char* name : {"left_key", "right_key", "toggle_key"})
+        for (const std::string_view name : {"left_key"sv, "right_key"sv, "toggle_key"sv})
             if (!seen.contains(name)) throw std::runtime_error(std::format("Unbound key: {}; run --configure first", name));
         if (map_y) {
-            for (const char* name : {"up_key", "down_key"})
+            for (const std::string_view name : {"up_key"sv, "down_key"sv})
                 if (!seen.contains(name)) throw std::runtime_error(std::format("Unbound key: {}; run --configure first", name));
-            for (const char* name : mouse_key_fields)
+            for (const std::string_view name : mouse_key_fields)
                 if (!seen.contains(name)) throw std::runtime_error(std::format("Unbound key: {}; run --configure first", name));
-            for (const char* name : wheel_key_fields)
+            for (const std::string_view name : wheel_key_fields)
                 if (!seen.contains(name)) throw std::runtime_error(std::format("Unbound key: {}; run --configure first", name));
         }
     }
-    if (!seen.contains("x_start_counts")) config.x_start_counts = config.filter.start_counts;
-    if (!seen.contains("x_reverse_counts")) config.x_reverse_counts = config.filter.reverse_counts;
-    if (!seen.contains("y_start_counts")) config.y_start_counts = config.filter.start_counts;
-    if (!seen.contains("y_reverse_counts")) config.y_reverse_counts = config.filter.reverse_counts;
     validate(config);
     return config;
 }
@@ -458,10 +464,8 @@ void write_config(std::ostream& output, const configuration& config) {
         output << '\n' << wheel_key_fields[index] << '=' << format_key(config.wheel_keys[index])
             << " ; " << key_name(config.wheel_keys[index]);
     output << "\ntoggle_key=" << format_key(config.toggle_key) << " ; " << key_name(config.toggle_key)
-        << "\nwindow_ms=" << config.filter.window_ms
-        << "\nstart_counts=" << config.filter.start_counts
-        << "\nreverse_counts=" << config.filter.reverse_counts
-        << "\nrelease_ms=" << config.filter.release_ms
+        << "\nwindow_ms=" << config.window_ms
+        << "\nrelease_ms=" << config.release_ms
         << "\nx_pulse_enabled=" << (config.x_pulse_enabled ? 1 : 0)
         << "\nx_keyboard_override_enabled=" << (config.x_keyboard_override_enabled ? 1 : 0)
         << "\nx_hold_ratio=" << std::format("{:.17g}", config.x_hold_ratio);
@@ -470,7 +474,7 @@ void write_config(std::ostream& output, const configuration& config) {
     output << "\n; Smoothing: lerp previous toward each nonzero axis input; 1 = raw, 0 = no axis mapping."
         << "\nx_smoothing_factor=" << std::format("{:.17g}", config.x_smoothing_factor)
         << "\ny_smoothing_factor=" << std::format("{:.17g}", config.y_smoothing_factor);
-    output << "\n; Per-axis thresholds override legacy start_counts/reverse_counts."
+    output << "\n; Independent start/reverse thresholds for each axis."
         << "\n; Curves apply only to pulses: normalized speed -> hold ratio (0..1)."
         << "\n; Speed is abs(net counts in the last 30ms)/0.03s; full speed is counts/s."
         << "\n; Curve disabled preserves the fixed hold ratio. Points: input:output,...";
@@ -529,11 +533,7 @@ void save_config(const std::filesystem::path& path, const configuration& config)
 }
 
 std::filesystem::path default_config_path() {
-    const auto directory = executable_directory();
-    const auto shared = directory / L"config.ini";
-    const auto legacy = directory / L"config.user.ini";
-    // Both backends resolve the same file, including legacy user-only installs.
-    return !std::filesystem::exists(shared) && std::filesystem::exists(legacy) ? legacy : shared;
+    return executable_directory() / L"config.ini";
 }
 
 std::filesystem::path executable_directory() {
